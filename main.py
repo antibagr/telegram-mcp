@@ -967,6 +967,7 @@ async def get_messages(
 async def send_message(
     chat_id: Union[int, str],
     message: str,
+    reply_to: int = None,
     parse_mode: Optional[str] = None,
     silent: bool = False,
     account: str = None,
@@ -976,6 +977,8 @@ async def send_message(
     Args:
         chat_id: The ID or username of the chat.
         message: The message content to send.
+        reply_to: Optional message ID to reply to. Also used to target a
+            forum topic by passing the topic ID.
         parse_mode: Optional formatting mode. Use 'html' for HTML tags (<b>, <i>, <code>, <pre>,
             <a href="...">), 'md' or 'markdown' for Markdown (**bold**, __italic__, `code`,
             ```pre```), or omit for plain text (no formatting).
@@ -984,7 +987,9 @@ async def send_message(
     try:
         cl = get_client(account)
         entity = await resolve_entity(chat_id, cl)
-        await cl.send_message(entity, message, parse_mode=parse_mode, silent=silent)
+        await cl.send_message(
+            entity, message, reply_to=reply_to, parse_mode=parse_mode, silent=silent
+        )
         return "Message sent successfully."
     except Exception as e:
         return log_and_format_error("send_message", e, chat_id=chat_id)
@@ -3909,6 +3914,7 @@ async def forward_message(
     message_id: int,
     to_chat_id: Union[int, str],
     silent: bool = False,
+    top_msg_id: int = None,
     account: str = None,
 ) -> str:
     """
@@ -3919,13 +3925,30 @@ async def forward_message(
         message_id: The message ID to forward.
         to_chat_id: Destination chat ID or username.
         silent: If True, forward without notification sound.
+        top_msg_id: Optional topic ID to forward into (forum/topic groups).
+            Telethon's high-level forward_messages helper does not expose
+            top_msg_id, so when set we issue a raw ForwardMessagesRequest.
     """
     try:
+        import random
+
         cl = get_client(account)
-        from_entity = await resolve_entity(from_chat_id, cl)
-        to_entity = await resolve_entity(to_chat_id, cl)
-        await cl.forward_messages(to_entity, message_id, from_entity, silent=silent)
-        return f"Message {message_id} forwarded from {from_chat_id} to {to_chat_id}."
+        from_peer = await resolve_input_entity(from_chat_id, cl)
+        to_peer = await resolve_input_entity(to_chat_id, cl)
+        await cl(
+            functions.messages.ForwardMessagesRequest(
+                from_peer=from_peer,
+                id=[message_id],
+                to_peer=to_peer,
+                silent=silent,
+                top_msg_id=top_msg_id,
+                random_id=[random.randint(0, 2**63 - 1)],
+            )
+        )
+        return (
+            f"Message {message_id} forwarded from {from_chat_id} to {to_chat_id} "
+            f"(top_msg_id={top_msg_id})."
+        )
     except Exception as e:
         return log_and_format_error(
             "forward_message",
