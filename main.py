@@ -108,6 +108,13 @@ def _discover_accounts() -> dict[str, TelegramClient]:
     - Unsuffixed TELEGRAM_SESSION_STRING / TELEGRAM_SESSION_NAME -> label "default"
     - If both suffixed and unsuffixed exist -> unsuffixed becomes "default"
     """
+    # TODO: Pin device_model/system_version on each TelegramClient so the
+    # same string session reports an identical fingerprint from Docker
+    # (Linux/aarch64) and macOS (arm64/Darwin). Without this, Telegram
+    # treats them as different devices reconnecting with the same auth
+    # key and may terminate sessions. See:
+    #   https://github.com/LonamiWebs/Telethon/issues/4321
+    #   https://github.com/LonamiWebs/Telethon/issues/4451
     accounts: dict[str, TelegramClient] = {}
 
     prefix_str = "TELEGRAM_SESSION_STRING_"
