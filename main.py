@@ -968,6 +968,7 @@ async def send_message(
     chat_id: Union[int, str],
     message: str,
     parse_mode: Optional[str] = None,
+    silent: bool = False,
     account: str = None,
 ) -> str:
     """
@@ -978,11 +979,12 @@ async def send_message(
         parse_mode: Optional formatting mode. Use 'html' for HTML tags (<b>, <i>, <code>, <pre>,
             <a href="...">), 'md' or 'markdown' for Markdown (**bold**, __italic__, `code`,
             ```pre```), or omit for plain text (no formatting).
+        silent: If True, send without notification sound.
     """
     try:
         cl = get_client(account)
         entity = await resolve_entity(chat_id, cl)
-        await cl.send_message(entity, message, parse_mode=parse_mode)
+        await cl.send_message(entity, message, parse_mode=parse_mode, silent=silent)
         return "Message sent successfully."
     except Exception as e:
         return log_and_format_error("send_message", e, chat_id=chat_id)
@@ -3906,16 +3908,23 @@ async def forward_message(
     from_chat_id: Union[int, str],
     message_id: int,
     to_chat_id: Union[int, str],
+    silent: bool = False,
     account: str = None,
 ) -> str:
     """
     Forward a message from one chat to another.
+
+    Args:
+        from_chat_id: Source chat ID or username.
+        message_id: The message ID to forward.
+        to_chat_id: Destination chat ID or username.
+        silent: If True, forward without notification sound.
     """
     try:
         cl = get_client(account)
         from_entity = await resolve_entity(from_chat_id, cl)
         to_entity = await resolve_entity(to_chat_id, cl)
-        await cl.forward_messages(to_entity, message_id, from_entity)
+        await cl.forward_messages(to_entity, message_id, from_entity, silent=silent)
         return f"Message {message_id} forwarded from {from_chat_id} to {to_chat_id}."
     except Exception as e:
         return log_and_format_error(
@@ -4169,6 +4178,7 @@ async def reply_to_message(
     message_id: int,
     text: str,
     parse_mode: Optional[str] = None,
+    silent: bool = False,
     account: str = None,
 ) -> str:
     """
@@ -4180,11 +4190,14 @@ async def reply_to_message(
         parse_mode: Optional formatting mode. Use 'html' for HTML tags (<b>, <i>, <code>, <pre>,
             <a href="...">), 'md' or 'markdown' for Markdown (**bold**, __italic__, `code`,
             ```pre```), or omit for plain text (no formatting).
+        silent: If True, send without notification sound.
     """
     try:
         cl = get_client(account)
         entity = await resolve_entity(chat_id, cl)
-        await cl.send_message(entity, text, reply_to=message_id, parse_mode=parse_mode)
+        await cl.send_message(
+            entity, text, reply_to=message_id, parse_mode=parse_mode, silent=silent
+        )
         return f"Replied to message {message_id} in chat {chat_id}."
     except Exception as e:
         return log_and_format_error(
