@@ -13,16 +13,18 @@ import mcp.server.streamable_http as _sh
 
 # Import the FastMCP instance and TelegramClient from the original main module.
 # All 70+ tools registered via @mcp.tool() come along for free.
-from main import mcp, client
+from main import mcp, clients
 
 PORT = 18797
 
 
 async def _main() -> None:
     try:
-        print("Starting Telegram client...")
-        await client.start()
-        print("Telegram client started. Running MCP HTTP server...")
+        print(f"Starting {len(clients)} Telegram client(s)...")
+        for label, cl in clients.items():
+            await cl.start()
+            print(f"  Client '{label}' started.")
+        print("All Telegram clients started. Running MCP HTTP server...")
 
         mcp.settings.host = "0.0.0.0"
         mcp.settings.port = PORT
