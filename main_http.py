@@ -28,6 +28,7 @@ async def _main() -> None:
 
         mcp.settings.host = "0.0.0.0"
         mcp.settings.port = PORT
+        mcp.settings.stateless_http = True
         mcp.settings.transport_security = _sh.TransportSecuritySettings(
             enable_dns_rebinding_protection=True,
             allowed_hosts=[
