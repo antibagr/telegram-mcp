@@ -5,11 +5,14 @@ streamable-http transport on port 18797 instead of stdio.
 """
 
 import asyncio
+import logging
 import sys
 import sqlite3
 
 import nest_asyncio
 import mcp.server.streamable_http as _sh
+
+logging.getLogger("mcp.server.streamable_http").setLevel(logging.WARNING)
 
 # Import the FastMCP instance and TelegramClient from the original main module.
 # All 70+ tools registered via @mcp.tool() come along for free.
