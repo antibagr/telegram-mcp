@@ -1,20 +1,47 @@
-FROM python:3.13-slim
+# syntax=docker/dockerfile:1
+ARG PYTHON_VERSION=3.14.5
+ARG UV_VERSION=0.11.15
+
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
+
+# ── Builder ──────────────────────────────────────────────────
+FROM python:${PYTHON_VERSION}-slim-trixie AS builder
+
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=0 \
+    UV_CACHE_DIR=/root/.cache/uv \
+    UV_PROJECT_ENVIRONMENT=/opt/venv
 
 WORKDIR /app
 
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
+COPY --from=uv /uv /bin/uv
+COPY --link pyproject.toml uv.lock ./
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-dev --no-install-project
+
+# ── Runtime ──────────────────────────────────────────────────
+FROM python:${PYTHON_VERSION}-slim-trixie AS runtime
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PATH="/opt/venv/bin:$PATH"
 
 # curl is needed for the Docker healthcheck
-RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+# hadolint ignore=DL3008
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl && \
+    rm -rf /var/lib/apt/lists/* && \
+    adduser --disabled-password --gecos "" appuser
 
-COPY requirements.txt ./
-RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir -r requirements.txt
+WORKDIR /app
 
-COPY main.py main_http.py sanitize.py ./
-COPY telegram_mcp ./telegram_mcp
+COPY --link --from=builder /opt/venv /opt/venv
+COPY --link main.py main_http.py sanitize.py ./
+COPY --link telegram_mcp ./telegram_mcp
 
-RUN adduser --disabled-password --gecos "" appuser && chown -R appuser:appuser /app
+RUN chown -R appuser:appuser /app
 USER appuser
 
 EXPOSE 18797

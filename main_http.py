@@ -9,7 +9,6 @@ import logging
 import sys
 import sqlite3
 
-import nest_asyncio
 import mcp.server.streamable_http as _sh
 
 logging.getLogger("mcp.server.streamable_http").setLevel(logging.WARNING)
@@ -60,7 +59,6 @@ async def _main() -> None:
 
 
 def main() -> None:
-    nest_asyncio.apply()
     asyncio.run(_main())
 
 
