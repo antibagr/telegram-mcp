@@ -8,6 +8,11 @@ services:
     container_name: telegram-mcp
     env_file:
       - .env
+    environment:
+      - TELEGRAM_ALLOW_SERVER_ROOTS_FALLBACK=1
+    command: ["python", "main_http.py", "/data"]
+    volumes:
+      - ./tg-files:/data
     ports:
       - "18797:18797"
     restart: unless-stopped

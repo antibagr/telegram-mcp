@@ -183,6 +183,9 @@ anon_new.session-journal
 *.session.sql
 *.session.sql-journal
 
+# Telegram MCP file-tool storage (bind-mounted to /data in the HTTP container)
+tg-files/
+
 # Claude Desktop config
 claude_desktop_config.json
 .DS_Store
