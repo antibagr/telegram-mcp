@@ -692,6 +692,7 @@ async def promote_admin(
                 "add_admins": False,
                 "anonymous": False,
                 "manage_call": True,
+                "manage_topics": True,
                 "other": True,
             }
 
@@ -706,6 +707,7 @@ async def promote_admin(
             add_admins=rights.get("add_admins", False),
             anonymous=rights.get("anonymous", False),
             manage_call=rights.get("manage_call", True),
+            manage_topics=rights.get("manage_topics", True),
             other=rights.get("other", True),
         )
 
@@ -765,6 +767,7 @@ async def demote_admin(
             add_admins=False,
             anonymous=False,
             manage_call=False,
+            manage_topics=False,
             other=False,
         )
 
@@ -1044,6 +1047,7 @@ async def edit_admin_rights(
     add_admins: bool = False,
     anonymous: bool = False,
     manage_call: bool = False,
+    manage_topics: bool = False,
     other: bool = False,
     account: str = None,
 ) -> str:
@@ -1068,6 +1072,7 @@ async def edit_admin_rights(
         add_admins: can add new admins with their own rights
         anonymous: admin actions appear anonymous
         manage_call: can manage voice/video chats
+        manage_topics: can create, edit, close and reopen forum topics (forum-enabled supergroups only)
         other: reserved for future rights
     """
     try:
@@ -1086,6 +1091,7 @@ async def edit_admin_rights(
             add_admins=add_admins,
             anonymous=anonymous,
             manage_call=manage_call,
+            manage_topics=manage_topics,
             other=other,
         )
         await cl(

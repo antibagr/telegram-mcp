@@ -8,6 +8,7 @@ without storing session files.
 
 Usage:
     python session_string_generator.py
+    python session_string_generator.py --qr
 
 Requirements:
     - telethon
@@ -19,18 +20,43 @@ parameters support integer IDs, string representations of IDs (e.g., "123456"),
 and usernames (e.g., "@mychannel").
 """
 
+import argparse
 import asyncio
+import getpass
 import io
 import os
 import sys
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 from telethon import errors
 from telethon.sessions import StringSession
 from telethon.sync import TelegramClient
+from telegram_mcp.client_identity import client_identity_kwargs
 from telegram_mcp.install_guard import UnsafeInstallationError, assert_safe_distribution
 
+# How many times the QR code is regenerated after expiry before giving up.
+_QR_MAX_REFRESHES = 10
+
 load_dotenv()
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Generate a Telegram session string for telegram-mcp."
+    )
+    login_group = parser.add_mutually_exclusive_group()
+    login_group.add_argument(
+        "--qr",
+        action="store_true",
+        help="Use Telegram QR login without prompting for a login method.",
+    )
+    login_group.add_argument(
+        "--phone",
+        action="store_true",
+        help="Use phone number + verification code login without prompting for a login method.",
+    )
+    return parser.parse_args()
 
 
 def _check_installation() -> None:
@@ -41,10 +67,8 @@ def _check_installation() -> None:
         sys.exit(1)
 
 
-def _qr_login(client: TelegramClient) -> None:
+def _render_qr(qr) -> None:
     import qrcode
-
-    qr = client.qr_login()
 
     print("\n----- QR Code Login -----\n")
 
@@ -61,15 +85,38 @@ def _qr_login(client: TelegramClient) -> None:
     print(f"Expires at: {qr.expires.strftime('%H:%M:%S')}")
     print("Waiting for you to scan...")
 
-    try:
-        client.loop.run_until_complete(qr.wait(timeout=120))
-    except asyncio.TimeoutError:
-        print("\nQR code expired. Please try again.")
-        client.disconnect()
-        sys.exit(1)
-    except errors.SessionPasswordNeededError:
-        pw = input("\nTwo-factor authentication enabled. Please enter your password: ")
-        client.sign_in(password=pw)
+
+def _seconds_until_expiry(qr) -> float:
+    """Seconds left before this QR token expires, with a small safety margin."""
+    expires = qr.expires
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    remaining = (expires - datetime.now(timezone.utc)).total_seconds()
+    return max(1.0, remaining - 1.0)
+
+
+def _qr_login(client: TelegramClient) -> None:
+    qr = client.qr_login()
+    _render_qr(qr)
+
+    for _ in range(_QR_MAX_REFRESHES):
+        try:
+            client.loop.run_until_complete(qr.wait(timeout=_seconds_until_expiry(qr)))
+            return
+        except asyncio.TimeoutError:
+            client.loop.run_until_complete(qr.recreate())
+            print("\nQR code expired, here is a fresh one.")
+            _render_qr(qr)
+        except errors.SessionPasswordNeededError:
+            pw = getpass.getpass(
+                "\nTwo-factor authentication enabled. Please enter your password: "
+            )
+            client.sign_in(password=pw)
+            return
+
+    print("\nQR code expired too many times. Please run the generator again.")
+    client.disconnect()
+    sys.exit(1)
 
 
 def _phone_login(client: TelegramClient) -> None:
@@ -94,11 +141,12 @@ def _phone_login(client: TelegramClient) -> None:
     try:
         client.sign_in(phone, code)
     except errors.SessionPasswordNeededError:
-        pw = input("Two-factor authentication enabled. Please enter your password: ")
+        pw = getpass.getpass("Two-factor authentication enabled. Please enter your password: ")
         client.sign_in(password=pw)
 
 
 def main() -> None:
+    args = _parse_args()
     _check_installation()
 
     API_ID = os.getenv("TELEGRAM_API_ID")
@@ -128,13 +176,18 @@ def main() -> None:
         .lower()
     )
 
-    print("\nChoose login method:")
-    print("  1) QR code login (recommended -- scan from your Telegram app)")
-    print("  2) Phone number + verification code")
-    method = input("\nEnter 1 or 2 [default: 1]: ").strip() or "1"
+    if args.qr:
+        method = "1"
+    elif args.phone:
+        method = "2"
+    else:
+        print("\nChoose login method:")
+        print("  1) QR code login (recommended -- scan from your Telegram app)")
+        print("  2) Phone number + verification code")
+        method = input("\nEnter 1 or 2 [default: 1]: ").strip() or "1"
 
     try:
-        client = TelegramClient(StringSession(), API_ID, API_HASH)
+        client = TelegramClient(StringSession(), API_ID, API_HASH, **client_identity_kwargs())
         client.connect()
 
         if not client.is_user_authorized():

@@ -30,6 +30,7 @@ Message sent successfully:
 - [Quick Start](#quick-start)
 - [MCP Client Configuration](#mcp-client-configuration)
 - [Multi-Account Setup](#multi-account-setup)
+- [Device Identity](#device-identity)
 - [Proxy Support](#proxy-support)
 - [File Path Security](#file-path-security)
 - [Docker](#docker)
@@ -84,6 +85,18 @@ uv run session_string_generator.py
 
 Follow the prompts. Save the generated session string securely.
 
+For scripted setup or operational runbooks, choose the login method explicitly:
+
+```bash
+# QR login, recommended when you already have Telegram open on another device
+uv run session_string_generator.py --qr
+
+# Phone number + verification code login
+uv run session_string_generator.py --phone
+```
+
+Without a flag, the generator keeps the interactive method prompt.
+
 ### 3. Configure Environment
 
 Copy the example file and fill in your real values:
@@ -99,6 +112,21 @@ TELEGRAM_API_ID=your_api_id_here
 TELEGRAM_API_HASH=your_api_hash_here
 TELEGRAM_SESSION_STRING=your_session_string_here
 ```
+
+By default, all Telegram MCP tools are exposed. If you want to prevent MCP
+clients from sending messages or performing chat/account mutations, set
+`TELEGRAM_EXPOSED_TOOLS=read-only` to expose only tools annotated with
+`readOnlyHint=True`:
+
+```env
+TELEGRAM_EXPOSED_TOOLS=read-only
+```
+
+This is an MCP tool-surface restriction, not a Telegram session sandbox or
+reduced Telegram account permission. The Telegram session string still has its
+normal authority inside the server process; read-only mode only prevents
+non-read-only tools from being registered and exposed through MCP. Accepted
+values are `all` (the default) and `read-only`.
 
 Run the server locally:
 
@@ -130,6 +158,13 @@ this project:
     }
   }
 }
+```
+
+To expose only read-only tools in Claude Desktop or Cursor, add this to the
+server `env` block:
+
+```json
+"TELEGRAM_EXPOSED_TOOLS": "read-only"
 ```
 
 Alternatively, install this repository directly from GitHub into a virtual
@@ -187,6 +222,24 @@ Example prompts:
 - "List my accounts"
 - "Show unread messages from all accounts"
 - "Send this from my work account to @example"
+
+## Device Identity
+
+These optional variables control how the client appears in Telegram under
+**Settings > Devices** (the active-sessions list):
+
+```env
+TELEGRAM_DEVICE_MODEL=Telegram MCP
+TELEGRAM_SYSTEM_VERSION=1.0
+TELEGRAM_APP_VERSION=1.0
+```
+
+If left unset, Telethon falls back to the host platform (for example `arm64`).
+Because these values are re-sent on every connection, a long-running server
+would otherwise overwrite the name chosen during login on each reconnect, so
+set them to keep a stable, recognisable device name. The same variables are
+read both by the session string generator (at login) and by the server (on
+every connect), so set them in the same place as your other credentials.
 
 ## Proxy Support
 
@@ -252,7 +305,11 @@ Allowed roots can come from:
 Security behavior:
 
 - Client MCP Roots replace server CLI roots when available.
-- Empty client Roots are treated as deny-all.
+- Empty client Roots are treated as deny-all by default. Some clients implement
+  the Roots capability but advertise an empty list, which disables file tools
+  even when server CLI roots are configured. Set
+  `TELEGRAM_ALLOW_SERVER_ROOTS_FALLBACK=1` to fall back to the server CLI roots
+  in that case (opt-in; the default stays deny-all).
 - Paths are resolved through real paths and must stay inside an allowed root.
 - Traversal, wildcard-like, shell-like, and null-byte path patterns are rejected.
 - Relative paths resolve under the first allowed root.
@@ -380,10 +437,11 @@ Telegram messages, display names, chat titles, and button labels are untrusted c
 ## Troubleshooting
 
 - **No Telegram session configured:** set `TELEGRAM_SESSION_STRING`, `TELEGRAM_SESSION_NAME`, or suffixed multi-account variants.
-- **Session is not authorized:** run `uv run session_string_generator.py` outside
-  the MCP server, use QR login when possible, then set `TELEGRAM_SESSION_STRING`
-  in `.env`. The MCP server does not perform interactive phone-code login over
-  stdio.
+- **Session is not authorized:** run `uv run session_string_generator.py --qr` outside
+  the MCP server when you can scan from an existing Telegram app, or
+  `uv run session_string_generator.py --phone` when you need phone-code login.
+  Then set `TELEGRAM_SESSION_STRING` in `.env`. The MCP server does not perform
+  interactive phone-code login over stdio.
 - **Invalid API credentials:** verify `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` at [my.telegram.org/apps](https://my.telegram.org/apps).
 - **Database is locked:** prefer string sessions, or make sure no other process is using the same file session.
 - **File tools are disabled:** pass allowed roots or configure MCP Roots in your client.

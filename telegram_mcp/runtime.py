@@ -45,6 +45,7 @@ import re
 from functools import wraps
 import telethon.errors.rpcerrorlist
 from sanitize import sanitize_user_content, sanitize_name, sanitize_dict, format_tool_result
+from telegram_mcp.client_identity import client_identity_kwargs
 
 
 class ValidationError(Exception):
@@ -135,6 +136,40 @@ def _install_annotation_hook() -> None:
 
 
 _install_annotation_hook()
+
+
+_EXPOSED_TOOLS_MODES = {"all", "read-only"}
+
+
+def _get_exposed_tools_mode(value: Optional[str] = None) -> str:
+    """Return the configured MCP tool exposure mode.
+
+    ``TELEGRAM_EXPOSED_TOOLS=read-only`` keeps only tools annotated with
+    ``readOnlyHint=True``. The default is ``all`` for backward compatibility.
+    """
+    raw_value = os.getenv("TELEGRAM_EXPOSED_TOOLS", "all") if value is None else value
+    mode = raw_value.strip().lower()
+    if mode not in _EXPOSED_TOOLS_MODES:
+        accepted = ", ".join(sorted(_EXPOSED_TOOLS_MODES))
+        raise SystemExit(
+            f"Invalid TELEGRAM_EXPOSED_TOOLS '{raw_value}'. Expected one of: {accepted}."
+        )
+    return mode
+
+
+def _apply_exposed_tools_mode(server: FastMCP = mcp, mode: Optional[str] = None) -> list[str]:
+    """Prune registered MCP tools according to the configured exposure mode."""
+    selected_mode = _get_exposed_tools_mode() if mode is None else _get_exposed_tools_mode(mode)
+    if selected_mode == "all":
+        return []
+
+    removed: list[str] = []
+    for tool in list(server._tool_manager.list_tools()):
+        annotations = getattr(tool, "annotations", None)
+        if not getattr(annotations, "readOnlyHint", False):
+            server._tool_manager.remove_tool(tool.name)
+            removed.append(tool.name)
+    return removed
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +276,7 @@ def _build_client(session: Any, label: str) -> TelegramClient:
         kwargs["proxy"] = proxy
     if connection is not None:
         kwargs["connection"] = connection
+    kwargs.update(client_identity_kwargs())
     return TelegramClient(session, TELEGRAM_API_ID, TELEGRAM_API_HASH, **kwargs)
 
 
@@ -470,6 +506,7 @@ ROOTS_STATUS_READY = "ready"
 ROOTS_STATUS_NOT_CONFIGURED = "not_configured"
 ROOTS_STATUS_UNSUPPORTED_FALLBACK = "unsupported_fallback"
 ROOTS_STATUS_CLIENT_DENY_ALL = "client_deny_all"
+ROOTS_STATUS_SERVER_FALLBACK = "server_fallback"
 ROOTS_STATUS_ERROR = "error"
 
 
@@ -923,6 +960,16 @@ def _is_roots_unsupported_error(error: Exception) -> bool:
     return False
 
 
+def _server_roots_fallback_enabled(value: Optional[str] = None) -> bool:
+    """Whether an empty client roots list should fall back to server CLI roots.
+
+    Opt-in via the ``TELEGRAM_ALLOW_SERVER_ROOTS_FALLBACK`` environment variable.
+    Defaults to ``False`` to preserve the safe deny-all behavior.
+    """
+    raw_value = os.getenv("TELEGRAM_ALLOW_SERVER_ROOTS_FALLBACK") if value is None else value
+    return _parse_bool_env(raw_value, False)
+
+
 async def _get_effective_allowed_roots_with_status(
     ctx: Optional[Context],
 ) -> tuple[List[Path], str]:
@@ -955,7 +1002,13 @@ async def _get_effective_allowed_roots_with_status(
     if client_roots:
         return _dedupe_paths(client_roots), ROOTS_STATUS_READY
 
-    # Roots API succeeded; an empty roots list is treated as explicit deny-all.
+    # Roots API succeeded but returned an empty list. By default this is an
+    # explicit deny-all. Some clients (e.g. ones that implement the Roots
+    # capability but expose no roots) advertise an empty list even though the
+    # operator configured server-side CLI roots; for those, an opt-in lets the
+    # server-side roots take effect instead of disabling file tools entirely.
+    if fallback_roots and _server_roots_fallback_enabled():
+        return fallback_roots, ROOTS_STATUS_SERVER_FALLBACK
     return [], ROOTS_STATUS_CLIENT_DENY_ALL
 
 

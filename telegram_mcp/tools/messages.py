@@ -3,6 +3,218 @@
 from telegram_mcp.runtime import *
 
 
+def get_media_label(msg) -> str:
+    """Short label of attached media for a message, or "" if none.
+
+    The media object is already present on the fetched message (msg.media /
+    msg.photo / msg.document etc.) — no extra API call needed. Surfacing it in
+    listings prevents the classic miss where a photo/file WITH a caption shows
+    up looking like a plain text message (Telethon puts the caption in
+    msg.message but the media stays in msg.media).
+    """
+    try:
+        # Link web preview is NOT an attachment. Check it FIRST: for a message with a
+        # link, Telethon returns the preview image via msg.photo; otherwise it would
+        # be incorrectly classified as a "photo".
+        if getattr(msg, "web_preview", None) is not None:
+            return ""
+        # Sticker/voice/video/audio/GIF are also represented as documents, so check
+        # them BEFORE the generic document handler.
+        sticker = getattr(msg, "sticker", None)
+        if sticker is not None:
+            alt = ""
+            for attr in getattr(sticker, "attributes", []) or []:
+                a = getattr(attr, "alt", None)
+                if a:
+                    alt = a
+                    break
+            return f"sticker {alt}".strip()
+        if getattr(msg, "photo", None) is not None:
+            return "photo"
+        if getattr(msg, "voice", None) is not None:
+            return "voice"
+        if getattr(msg, "video_note", None) is not None:
+            return "video_note"
+        if getattr(msg, "video", None) is not None:
+            return "video"
+        if getattr(msg, "audio", None) is not None:
+            return "audio"
+        if getattr(msg, "gif", None) is not None:
+            return "gif"
+        if getattr(msg, "document", None) is not None:
+            name = None
+            f = getattr(msg, "file", None)
+            if f is not None:
+                name = getattr(f, "name", None)
+            return f"document: {name}" if name else "document"
+        if getattr(msg, "contact", None) is not None:
+            return "contact"
+        if getattr(msg, "geo", None) is not None:
+            return "geo"
+        if getattr(msg, "poll", None) is not None:
+            return "poll"
+        if getattr(msg, "media", None) is not None:
+            return "media"
+        return ""
+    except Exception:
+        return ""
+
+
+def _inline_button_texts(msg):
+    """Inline button texts of the message (flat list), [] if none."""
+    out = []
+    try:
+        for row in getattr(msg, "buttons", None) or []:
+            for b in row:
+                t = getattr(b, "text", None)
+                if t:
+                    out.append(t)
+    except Exception:
+        pass
+    return out
+
+
+def _link_urls(msg):
+    """Explicit URLs from entities (links hidden behind text), [] if none."""
+    out = []
+    try:
+        for e in getattr(msg, "entities", None) or []:
+            u = getattr(e, "url", None)
+            if u:
+                out.append(u)
+    except Exception:
+        pass
+    return out
+
+
+def message_to_dict(msg) -> dict:
+    """API-complete but compact Telethon message view (omit empty fields).
+
+    The goal is for the MCP output to match the API object in completeness, rather
+    than losing data such as media, albums, forwards, edits, buttons, reactions,
+    and so on. All these fields are already present in the message object returned
+    by the same get_messages request.
+    """
+    d = {"id": msg.id, "sender": get_sender_name(msg), "date": msg.date}
+
+    sender_id = getattr(msg, "sender_id", None)
+    if sender_id is not None:
+        d["sender_id"] = sender_id
+    if getattr(msg, "out", False):
+        d["out"] = True
+
+    text = sanitize_user_content(msg.message) if getattr(msg, "message", None) else ""
+    if text:
+        d["text"] = text
+
+    media_label = get_media_label(msg)
+    if media_label:
+        d["media"] = media_label
+
+    grouped_id = getattr(msg, "grouped_id", None)
+    if grouped_id:
+        d["grouped_id"] = grouped_id  # album: messages sharing one grouped_id form a single group
+
+    reply_to_id = (
+        getattr(msg.reply_to, "reply_to_msg_id", None) if getattr(msg, "reply_to", None) else None
+    )
+    if reply_to_id:
+        d["reply_to"] = reply_to_id
+
+    fwd = getattr(msg, "fwd_from", None)
+    if fwd is not None:
+        finfo = {}
+        fdate = getattr(fwd, "date", None)
+        if fdate:
+            finfo["date"] = fdate
+        fname = getattr(fwd, "from_name", None)
+        if fname:
+            finfo["from_name"] = sanitize_name(fname)
+        d["forwarded"] = finfo or True
+
+    via_bot_id = getattr(msg, "via_bot_id", None)
+    if via_bot_id:
+        d["via_bot_id"] = via_bot_id
+
+    edit_date = getattr(msg, "edit_date", None)
+    if edit_date:
+        d["edited"] = edit_date
+
+    if getattr(msg, "pinned", False):
+        d["pinned"] = True
+
+    engagement = get_engagement_dict(msg)
+    if engagement:
+        d["engagement"] = engagement
+
+    replies = getattr(msg, "replies", None)
+    if replies is not None:
+        cnt = getattr(replies, "replies", None)
+        if cnt is not None:
+            d["comments"] = cnt
+
+    buttons = _inline_button_texts(msg)
+    if buttons:
+        d["buttons"] = buttons
+
+    urls = _link_urls(msg)
+    if urls:
+        d["link_urls"] = urls
+
+    action = getattr(msg, "action", None)
+    if action is not None:
+        d["action"] = type(action).__name__  # service message (joined/pinned/…)
+
+    ttl = getattr(msg, "ttl_period", None)
+    if ttl:
+        d["ttl_period"] = ttl
+
+    return d
+
+
+def format_message_line(msg) -> str:
+    """Single-line human-readable message representation with ALL key flags."""
+    parts = [f"ID: {msg.id}", get_sender_name(msg), f"Date: {msg.date}"]
+
+    reply_to_id = (
+        getattr(msg.reply_to, "reply_to_msg_id", None) if getattr(msg, "reply_to", None) else None
+    )
+    if reply_to_id:
+        parts.append(f"reply to {reply_to_id}")
+
+    flags = []
+    media_label = get_media_label(msg)
+    if media_label:
+        flags.append(f"📎 {media_label}")
+    grouped_id = getattr(msg, "grouped_id", None)
+    if grouped_id:
+        flags.append(f"album:{grouped_id}")
+    if getattr(msg, "fwd_from", None) is not None:
+        flags.append("forwarded")
+    if getattr(msg, "edit_date", None):
+        flags.append("edited")
+    if getattr(msg, "via_bot_id", None):
+        flags.append("via_bot")
+    if getattr(msg, "pinned", False):
+        flags.append("pinned")
+    btn = _inline_button_texts(msg)
+    if btn:
+        flags.append(f"buttons:{len(btn)}")
+    action = getattr(msg, "action", None)
+    if action is not None:
+        flags.append(f"service:{type(action).__name__}")
+    if flags:
+        parts.append(", ".join(flags))
+
+    engagement_info = get_engagement_info(msg).lstrip(" |").strip()
+    if engagement_info:
+        parts.append(engagement_info)
+
+    raw = sanitize_user_content(msg.message) if getattr(msg, "message", None) else ""
+    safe_text = raw.replace("\n", "\\n") if raw else "[empty]"
+    return " | ".join(parts) + f" | Message: {safe_text}"
+
+
 @mcp.tool(annotations=ToolAnnotations(title="Get Messages", openWorldHint=True, readOnlyHint=True))
 @with_account(readonly=True)
 @validate_id("chat_id")
@@ -25,19 +237,7 @@ async def get_messages(
         messages = await cl.get_messages(entity, limit=page_size, add_offset=offset)
         if not messages:
             return "No messages found for this page."
-        lines = []
-        for msg in messages:
-            sender_name = get_sender_name(msg)
-            reply_info = ""
-            if msg.reply_to and msg.reply_to.reply_to_msg_id:
-                reply_info = f" | reply to {msg.reply_to.reply_to_msg_id}"
-
-            engagement_info = get_engagement_info(msg)
-            safe_text = sanitize_user_content(msg.message).replace("\n", "\\n")
-
-            lines.append(
-                f"ID: {msg.id} | {sender_name} | Date: {msg.date}{reply_info}{engagement_info} | Message: {safe_text}"
-            )
+        lines = [format_message_line(msg) for msg in messages]
         return "\n".join(lines)
     except Exception as e:
         return log_and_format_error(
@@ -600,8 +800,12 @@ async def list_messages(
                 "date": msg.date,
                 "text": sanitize_user_content(msg.message),
             }
-            if msg.reply_to and msg.reply_to.reply_to_msg_id:
-                record["reply_to"] = msg.reply_to.reply_to_msg_id
+            grouped_id = getattr(msg, "grouped_id", None)
+            if grouped_id is not None:
+                record["grouped_id"] = grouped_id
+            reply_to_id = getattr(msg.reply_to, "reply_to_msg_id", None) if msg.reply_to else None
+            if reply_to_id:
+                record["reply_to"] = reply_to_id
             engagement = get_engagement_dict(msg)
             if engagement:
                 record["engagement"] = engagement
@@ -662,6 +866,9 @@ async def get_message_context(
                 "is_target": msg.id == message_id,
                 "text": sanitize_user_content(msg.message),
             }
+            grouped_id = getattr(msg, "grouped_id", None)
+            if grouped_id is not None:
+                record["grouped_id"] = grouped_id
 
             # Check if this message is a reply and get the replied message
             if msg.reply_to and msg.reply_to.reply_to_msg_id:
@@ -706,42 +913,100 @@ async def get_message_context(
 @validate_id("from_chat_id", "to_chat_id")
 async def forward_message(
     from_chat_id: Union[int, str],
-    message_id: int,
+    message_id: Union[int, List[int]],
     to_chat_id: Union[int, str],
     silent: bool = False,
     top_msg_id: int = None,
     account: str = None,
+    expand_album: bool = True,
 ) -> str:
     """
-    Forward a message from one chat to another.
+    Forward a message (or several) from a source chat to a destination chat.
+
+    When forwarding a single int message_id, the server automatically detects
+    Telegram albums (multi-photo/video posts sharing a `grouped_id`) and
+    forwards the ENTIRE album as one grouped batch, so the destination
+    receives the album intact rather than a single detached photo. Set
+    expand_album=False to forward only the exact message you specified.
+
+    To forward a specific set of unrelated messages, pass a list of ints.
+    Album expansion is not applied to list inputs.
 
     Args:
-        from_chat_id: Source chat ID or username.
-        message_id: The message ID to forward.
-        to_chat_id: Destination chat ID or username.
+        from_chat_id: Source chat (id or @username).
+        message_id: A single message id (int) OR a list of ids. Single ints
+            are auto-expanded to the full album when applicable.
+        to_chat_id: Destination chat (id or @username).
         silent: If True, forward without notification sound.
-        top_msg_id: Optional topic ID to forward into (forum/topic groups).
-            Telethon's high-level forward_messages helper does not expose
-            top_msg_id, so when set we issue a raw ForwardMessagesRequest.
+        top_msg_id: Optional topic id to forward into (forum/topic groups).
+        account: Optional account label for multi-account mode.
+        expand_album: If True (default) and message_id is a single int, the
+            server expands albums automatically. No effect on list inputs.
     """
     try:
         import random
 
         cl = get_client(account)
+        from_entity = await resolve_entity(from_chat_id, cl)
+
+        # Auto-expand albums (upstream behavior): a single int that belongs to
+        # a grouped album expands to all sibling ids so the album forwards
+        # intact. No effect on explicit list inputs.
+        ids_to_forward = message_id
+        expanded_from_album = False
+        if expand_album and isinstance(message_id, int):
+            anchor = await cl.get_messages(from_entity, ids=message_id)
+            grouped_id = getattr(anchor, "grouped_id", None) if anchor else None
+            if grouped_id is not None:
+                # Album ids are allocated contiguously by Telegram; a small
+                # window around the anchor reliably captures all siblings.
+                window = list(range(message_id - 9, message_id + 10))
+                neighbors = await cl.get_messages(from_entity, ids=window)
+                sibling_ids = sorted(
+                    {
+                        m.id
+                        for m in neighbors
+                        if m is not None and getattr(m, "grouped_id", None) == grouped_id
+                    }
+                )
+                if len(sibling_ids) > 1:
+                    ids_to_forward = sibling_ids
+                    expanded_from_album = True
+
+        id_list = (
+            ids_to_forward if isinstance(ids_to_forward, list) else [ids_to_forward]
+        )
+
+        # Raw ForwardMessagesRequest so silent + top_msg_id (forum/topic
+        # targeting) are honored; the high-level forward_messages helper does
+        # not expose top_msg_id.
         from_peer = await resolve_input_entity(from_chat_id, cl)
         to_peer = await resolve_input_entity(to_chat_id, cl)
         await cl(
             functions.messages.ForwardMessagesRequest(
                 from_peer=from_peer,
-                id=[message_id],
+                id=id_list,
                 to_peer=to_peer,
                 silent=silent,
                 top_msg_id=top_msg_id,
-                random_id=[random.randint(0, 2**63 - 1)],
+                random_id=[random.randint(0, 2**63 - 1) for _ in id_list],
             )
         )
+
+        count = len(id_list)
+        if expanded_from_album:
+            return (
+                f"Album of {count} messages forwarded from {from_chat_id} to "
+                f"{to_chat_id} (auto-expanded from message {message_id}, "
+                f"top_msg_id={top_msg_id})."
+            )
+        if count == 1:
+            return (
+                f"Message {message_id} forwarded from {from_chat_id} to "
+                f"{to_chat_id} (top_msg_id={top_msg_id})."
+            )
         return (
-            f"Message {message_id} forwarded from {from_chat_id} to {to_chat_id} "
+            f"{count} messages forwarded from {from_chat_id} to {to_chat_id} "
             f"(top_msg_id={top_msg_id})."
         )
     except Exception as e:
@@ -750,6 +1015,58 @@ async def forward_message(
             e,
             from_chat_id=from_chat_id,
             message_id=message_id,
+            to_chat_id=to_chat_id,
+        )
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Forward Messages (batch)", openWorldHint=True, destructiveHint=True
+    )
+)
+@with_account(readonly=False)
+@validate_id("from_chat_id", "to_chat_id")
+async def forward_messages(
+    from_chat_id: Union[int, str],
+    message_ids: List[int],
+    to_chat_id: Union[int, str],
+    account: str = None,
+) -> str:
+    """
+    Forward a BATCH of messages from a source chat to a destination chat in
+    a single atomic call.
+
+    Use this whenever you need to forward more than one message. Pass all
+    message ids as a list (e.g. message_ids=[12345, 12346, 12347]). Calling
+    this once with a list is strictly better than calling forward_message
+    multiple times: it preserves Telegram album grouping (siblings sharing
+    `grouped_id` arrive as one grouped album), is atomic, and counts as a
+    single forward op for Telegram rate limits.
+
+    For exactly one message, you may use either this tool with a one-item
+    list or `forward_message` with an int.
+
+    Args:
+        from_chat_id: Source chat (id or @username).
+        message_ids: List of message ids to forward, in any order
+            (e.g. [12345, 12346]). Must contain at least one id.
+        to_chat_id: Destination chat (id or @username).
+        account: Optional account label for multi-account mode.
+    """
+    try:
+        if not message_ids:
+            return "Error: message_ids must contain at least one id."
+        cl = get_client(account)
+        from_entity = await resolve_entity(from_chat_id, cl)
+        to_entity = await resolve_entity(to_chat_id, cl)
+        await cl.forward_messages(to_entity, list(message_ids), from_entity)
+        return f"{len(message_ids)} messages forwarded from " f"{from_chat_id} to {to_chat_id}."
+    except Exception as e:
+        return log_and_format_error(
+            "forward_messages",
+            e,
+            from_chat_id=from_chat_id,
+            message_ids=message_ids,
             to_chat_id=to_chat_id,
         )
 
@@ -1122,17 +1439,7 @@ async def get_history(chat_id: Union[int, str], limit: int = 100, account: str =
         entity = await resolve_entity(chat_id, cl)
         messages = await cl.get_messages(entity, limit=limit)
 
-        records = []
-        for msg in messages:
-            record = {
-                "id": msg.id,
-                "sender": get_sender_name(msg),
-                "date": msg.date,
-                "text": sanitize_user_content(msg.message),
-            }
-            if msg.reply_to and msg.reply_to.reply_to_msg_id:
-                record["reply_to"] = msg.reply_to.reply_to_msg_id
-            records.append(record)
+        records = [message_to_dict(msg) for msg in messages]
         return format_tool_result(records)
     except Exception as e:
         return log_and_format_error("get_history", e, chat_id=chat_id, limit=limit)
