@@ -46,7 +46,7 @@ The server currently includes 80+ MCP tools grouped into these areas:
 - **Accounts:** list configured accounts and route tool calls by account label.
 - **Chats and groups:** list chats, inspect metadata, create groups/channels, join or leave chats, invite users, manage admins, bans, default permissions, slow mode, topics, invite links, common chats, read receipts, and message links.
 - **Messages:** send, schedule, edit, delete, forward, pin, unpin, mark read, reply, search, inspect context, create polls, manage reactions, inspect inline buttons, and press inline callbacks.
-- **Contacts:** list, search, add, delete, block, unblock, import, export, inspect direct chats, and find recent contact interactions.
+- **Contacts:** list, search, add, delete, block, unblock, import, export, inspect direct chats, find recent contact interactions, and manage favorite aliases (e.g. save "andrew" so any tool accepting a `chat_id` resolves it; searches check favorites first).
 - **Media:** send files, download media, upload files, send voice notes, stickers, GIFs, and inspect message media.
 - **Profile and privacy:** get your own account info, update profile fields, set or delete profile photos, inspect privacy settings, get user info/photos/status, and manage bot commands.
 - **Folders and drafts:** list, create, update, reorder, and delete Telegram folders; save, list, and clear drafts.
@@ -122,11 +122,22 @@ clients from sending messages or performing chat/account mutations, set
 TELEGRAM_EXPOSED_TOOLS=read-only
 ```
 
+If read-only is too strict but `all` is too broad, append `+` and a
+comma-separated list of tool names to also expose those specific write tools.
+Every other write tool stays unregistered:
+
+```env
+TELEGRAM_EXPOSED_TOOLS=read-only+send_message,reply_to_message,send_file
+```
+
+An unknown name in the allowlist aborts startup, so a typo cannot silently
+degrade into a narrower surface that looks like it worked.
+
 This is an MCP tool-surface restriction, not a Telegram session sandbox or
 reduced Telegram account permission. The Telegram session string still has its
 normal authority inside the server process; read-only mode only prevents
 non-read-only tools from being registered and exposed through MCP. Accepted
-values are `all` (the default) and `read-only`.
+values are `all` (the default), `read-only`, and `read-only+<tool>,<tool>`.
 
 Run the server locally:
 
@@ -167,6 +178,12 @@ server `env` block:
 "TELEGRAM_EXPOSED_TOOLS": "read-only"
 ```
 
+Or keep read-only as the baseline and allow a few write tools on top:
+
+```json
+"TELEGRAM_EXPOSED_TOOLS": "read-only+send_message,reply_to_message"
+```
+
 Alternatively, install this repository directly from GitHub into a virtual
 environment using a specific release tag or commit:
 
@@ -200,6 +217,55 @@ from GitHub explicitly:
 uvx --from "git+https://github.com/chigwell/telegram-mcp.git@<pinned-release-tag-or-commit>" telegram-mcp-generate-session
 ```
 
+### Transports
+
+The server speaks three MCP transports, selected with `MCP_TRANSPORT`:
+
+| Value   | Transport                  | Use case                                                        |
+| ------- | -------------------------- | --------------------------------------------------------------- |
+| `stdio` | stdio (default)            | One dedicated server process per MCP client                     |
+| `http`  | streamable HTTP            | One shared server for many clients (Claude Code, Codex, Cursor) |
+| `sse`   | SSE (legacy HTTP)          | Clients that only support the deprecated SSE transport          |
+
+For `http` and `sse`, the server binds `MCP_HOST`:`MCP_PORT` (default
+`127.0.0.1:8765`); the streamable HTTP endpoint is `/mcp`, the SSE endpoint is
+`/sse`.
+
+If the server is reachable via a domain (e.g. behind a reverse proxy) rather
+than only `127.0.0.1`/`localhost`, set `MCP_ALLOWED_HOSTS` (and optionally
+`MCP_ALLOWED_ORIGINS`) to enable DNS-rebinding protection and allow that Host
+header, e.g. `MCP_ALLOWED_HOSTS=mcp.example.com`. Comma-separated; supports a
+`:*` suffix to allow any port. Left unset, DNS-rebinding protection stays off
+(the historical default).
+
+Prefer `http` when more than one MCP client (or many coding-agent sessions)
+will use the server: a single long-lived process holds one Telegram
+connection, instead of every client spawning its own Telethon session —
+Telegram throttles and may flag accounts that open many parallel sessions.
+
+Register the shared server with clients:
+
+```bash
+# Claude Code
+claude mcp add --transport http telegram http://127.0.0.1:8765/mcp
+
+# Codex
+codex mcp add telegram --url http://127.0.0.1:8765/mcp
+```
+
+For stdio-only clients, bridge with [mcp-remote](https://www.npmjs.com/package/mcp-remote):
+
+```json
+{
+  "mcpServers": {
+    "telegram-mcp": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://127.0.0.1:8765/mcp"]
+    }
+  }
+}
+```
+
 ## Multi-Account Setup
 
 Use suffixed session variables to configure multiple Telegram accounts:
@@ -221,6 +287,26 @@ Example prompts:
 
 - "List my accounts"
 - "Show unread messages from all accounts"
+
+### Session pool (one account, several concurrent clients)
+
+To run several MCP clients against the **same** Telegram account at once (for
+example the desktop app *and* a terminal CLI), give each client its own
+authorized session. Telegram forbids one session (auth key) being used from two
+IPs simultaneously, so on a VPN or dual-stack host two local clients can collide
+with `AuthKeyDuplicatedError`. List several interchangeable session strings in
+`TELEGRAM_SESSION_STRINGS` (separated by whitespace, comma or semicolon); each
+process claims a free one via an advisory file lock, so clients deterministically
+pick distinct sessions:
+
+```env
+TELEGRAM_SESSION_STRINGS=<session A> <session B> <session C>
+```
+
+Generate extra sessions with `uv run session_string_generator.py`. The pool
+takes precedence over `TELEGRAM_SESSION_STRING` for the default account. As an
+extra safety net, a transient `AuthKeyDuplicatedError` at connect time (e.g.
+during a VPN reconnect) is retried with backoff before the server gives up.
 - "Send this from my work account to @example"
 
 ## Device Identity
@@ -305,11 +391,16 @@ Allowed roots can come from:
 Security behavior:
 
 - Client MCP Roots replace server CLI roots when available.
+- Some clients (notably Cursor) return workspace roots as bare absolute paths
+  instead of `file://` URIs. That breaks MCP SDK validation of `list_roots`;
+  the server recovers those absolute paths from the validation error so
+  file-path tools keep working.
 - Empty client Roots are treated as deny-all by default. Some clients implement
   the Roots capability but advertise an empty list, which disables file tools
   even when server CLI roots are configured. Set
   `TELEGRAM_ALLOW_SERVER_ROOTS_FALLBACK=1` to fall back to the server CLI roots
-  in that case (opt-in; the default stays deny-all).
+  in that case (opt-in; the default stays deny-all). The same opt-in also applies
+  when `list_roots` fails unexpectedly and no client paths could be recovered.
 - Paths are resolved through real paths and must stay inside an allowed root.
 - Traversal, wildcard-like, shell-like, and null-byte path patterns are rejected.
 - Relative paths resolve under the first allowed root.
@@ -355,21 +446,51 @@ Build the image:
 docker build -t telegram-mcp:latest .
 ```
 
-Run with Compose:
+### Shared server (recommended)
+
+Run one long-lived container serving streamable HTTP, and point every MCP
+client at it (see [Transports](#transports) for client registration):
 
 ```bash
-docker compose up --build
-```
-
-Run directly:
-
-```bash
-docker run -it --rm \
-  -e TELEGRAM_API_ID="YOUR_API_ID" \
-  -e TELEGRAM_API_HASH="YOUR_API_HASH" \
-  -e TELEGRAM_SESSION_STRING="YOUR_SESSION_STRING" \
+docker run -d --name telegram-mcp --restart unless-stopped \
+  --env-file .env \
+  -e MCP_TRANSPORT=http \
+  -e MCP_HOST=0.0.0.0 \
+  -p 127.0.0.1:8765:8765 \
   telegram-mcp:latest
 ```
+
+`MCP_HOST=0.0.0.0` binds inside the container so the published port works;
+`-p 127.0.0.1:8765:8765` keeps the server reachable only from the local
+machine — the endpoint is unauthenticated, so never publish it on a public
+interface.
+
+The bundled Compose file runs the same setup:
+
+```bash
+docker compose up --build -d
+```
+
+### One container per client (stdio)
+
+Alternatively, an MCP client can spawn a dedicated container itself:
+
+```json
+{
+  "mcpServers": {
+    "telegram-mcp": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "--env-file", "/full/path/to/.env", "telegram-mcp:latest"]
+    }
+  }
+}
+```
+
+This is fine for a single client, but with several clients (or coding agents
+that spawn subagent sessions) each one starts its own container and its own
+Telegram session, which Telegram throttles; a client that exits uncleanly can
+also leave its container running. Prefer the shared server above in those
+setups.
 
 For multiple accounts, pass variables such as `TELEGRAM_SESSION_STRING_WORK` and `TELEGRAM_SESSION_STRING_PERSONAL`.
 

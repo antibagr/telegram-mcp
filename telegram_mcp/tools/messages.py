@@ -87,6 +87,29 @@ def _link_urls(msg):
     return out
 
 
+def get_reply_quote(msg) -> Optional[dict]:
+    """Quoted fragment when a reply targets only *part* of the replied-to message.
+
+    Telegram lets you select a span of another message and reply to just that
+    span. Telethon exposes it on msg.reply_to as quote_text (the selected text)
+    and quote_offset (its UTF-16 character offset inside the original message).
+    Returns {"text": ..., "offset": ...} for such a partial-quote reply, or None
+    for a plain whole-message reply (or no reply at all). Independent of
+    reply_to_msg_id so a cross-chat quote reply still surfaces its quote.
+    """
+    reply = getattr(msg, "reply_to", None)
+    if reply is None:
+        return None
+    quote_text = getattr(reply, "quote_text", None)
+    if not quote_text:
+        return None
+    quote = {"text": sanitize_user_content(quote_text)}
+    offset = getattr(reply, "quote_offset", None)
+    if offset is not None:
+        quote["offset"] = offset
+    return quote
+
+
 def message_to_dict(msg) -> dict:
     """API-complete but compact Telethon message view (omit empty fields).
 
@@ -100,6 +123,9 @@ def message_to_dict(msg) -> dict:
     sender_id = getattr(msg, "sender_id", None)
     if sender_id is not None:
         d["sender_id"] = sender_id
+    username = get_sender_username(msg)
+    if username:
+        d["username"] = username
     if getattr(msg, "out", False):
         d["out"] = True
 
@@ -120,6 +146,9 @@ def message_to_dict(msg) -> dict:
     )
     if reply_to_id:
         d["reply_to"] = reply_to_id
+    reply_quote = get_reply_quote(msg)
+    if reply_quote:
+        d["reply_quote"] = reply_quote  # reply to a selected span of the original
 
     fwd = getattr(msg, "fwd_from", None)
     if fwd is not None:
@@ -174,13 +203,19 @@ def message_to_dict(msg) -> dict:
 
 def format_message_line(msg) -> str:
     """Single-line human-readable message representation with ALL key flags."""
-    parts = [f"ID: {msg.id}", get_sender_name(msg), f"Date: {msg.date}"]
+    parts = [f"ID: {msg.id}", get_sender_info(msg), f"Date: {msg.date}"]
 
     reply_to_id = (
         getattr(msg.reply_to, "reply_to_msg_id", None) if getattr(msg, "reply_to", None) else None
     )
     if reply_to_id:
         parts.append(f"reply to {reply_to_id}")
+    reply_quote = get_reply_quote(msg)
+    if reply_quote:
+        preview = reply_quote["text"].replace("\n", " ")
+        if len(preview) > 60:
+            preview = preview[:60] + "…"
+        parts.append(f'quoting "{preview}"')
 
     flags = []
     media_label = get_media_label(msg)
@@ -802,7 +837,7 @@ async def list_messages(
         for msg in messages:
             record = {
                 "id": msg.id,
-                "sender": get_sender_name(msg),
+                "sender": get_sender_info(msg),
                 "date": msg.date,
                 "text": sanitize_user_content(msg.message),
             }
@@ -812,6 +847,9 @@ async def list_messages(
             reply_to_id = getattr(msg.reply_to, "reply_to_msg_id", None) if msg.reply_to else None
             if reply_to_id:
                 record["reply_to"] = reply_to_id
+            reply_quote = get_reply_quote(msg)
+            if reply_quote:
+                record["reply_quote"] = reply_quote
             engagement = get_engagement_dict(msg)
             if engagement:
                 record["engagement"] = engagement
@@ -874,25 +912,34 @@ async def get_message_context(
                 "is_target": msg.id == message_id,
                 "text": sanitize_user_content(msg.message),
             }
+            if getattr(msg, "sender_id", None):
+                record["sender_id"] = msg.sender_id
+            _username = get_sender_username(msg)
+            if _username:
+                record["username"] = _username
             grouped_id = getattr(msg, "grouped_id", None)
             if grouped_id is not None:
                 record["grouped_id"] = grouped_id
 
             # Check if this message is a reply and get the replied message
+            reply_quote = get_reply_quote(msg)
+            if reply_quote:
+                record["reply_quote"] = reply_quote
             if msg.reply_to and msg.reply_to.reply_to_msg_id:
                 record["reply_to"] = msg.reply_to.reply_to_msg_id
                 try:
                     replied_msg = await cl.get_messages(chat, ids=msg.reply_to.reply_to_msg_id)
                     if replied_msg:
-                        replied_sender = "Unknown"
-                        if replied_msg.sender:
-                            replied_sender = getattr(
-                                replied_msg.sender, "first_name", ""
-                            ) or getattr(replied_msg.sender, "title", "Unknown")
-                        record["replied_message"] = {
-                            "sender": sanitize_name(replied_sender),
+                        replied_record = {
+                            "sender": get_sender_name(replied_msg),
                             "text": sanitize_user_content(replied_msg.message),
                         }
+                        if getattr(replied_msg, "sender_id", None):
+                            replied_record["sender_id"] = replied_msg.sender_id
+                        _r_username = get_sender_username(replied_msg)
+                        if _r_username:
+                            replied_record["username"] = _r_username
+                        record["replied_message"] = replied_record
                 except Exception:
                     record["replied_message"] = None
 
@@ -1370,12 +1417,15 @@ async def search_messages(
         for msg in messages:
             record = {
                 "id": msg.id,
-                "sender": get_sender_name(msg),
+                "sender": get_sender_info(msg),
                 "date": msg.date,
                 "text": sanitize_user_content(msg.message),
             }
             if msg.reply_to and msg.reply_to.reply_to_msg_id:
                 record["reply_to"] = msg.reply_to.reply_to_msg_id
+            reply_quote = get_reply_quote(msg)
+            if reply_quote:
+                record["reply_quote"] = reply_quote
             records.append(record)
         return format_tool_result(records)
     except Exception as e:
@@ -1420,7 +1470,7 @@ async def search_global(
                     "chat_name": sanitize_name(chat_name),
                     "chat_id": msg.chat_id,
                     "id": msg.id,
-                    "sender": get_sender_name(msg),
+                    "sender": get_sender_info(msg),
                     "date": msg.date,
                     "text": sanitize_user_content(msg.message),
                 }
@@ -1502,12 +1552,15 @@ async def get_pinned_messages(chat_id: Union[int, str], account: str = None) -> 
         for msg in messages:
             record = {
                 "id": msg.id,
-                "sender": get_sender_name(msg),
+                "sender": get_sender_info(msg),
                 "date": msg.date,
                 "text": sanitize_user_content(msg.message),
             }
             if msg.reply_to and msg.reply_to.reply_to_msg_id:
                 record["reply_to"] = msg.reply_to.reply_to_msg_id
+            reply_quote = get_reply_quote(msg)
+            if reply_quote:
+                record["reply_quote"] = reply_quote
             records.append(record)
 
         return format_tool_result(records)
@@ -1571,6 +1624,9 @@ async def create_poll(
                 PollAnswer(text=TextWithEntities(text=option, entities=[]), option=bytes([i]))
                 for i, option in enumerate(options)
             ],
+            # Telethon 1.44 made `hash` a required argument on Poll. It caches
+            # server-side results, so a poll being created sends 0.
+            hash=0,
             multiple_choice=multiple_choice,
             quiz=quiz_mode,
             public_voters=public_votes,

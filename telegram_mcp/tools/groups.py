@@ -235,8 +235,7 @@ async def add_bot_to_chat(
                     return f"Bot @{username} is already a participant in {chat_title}."
                 except telethon.errors.rpcerrorlist.ChatAdminRequiredError:
                     return (
-                        "Error: admin rights required to add a bot as admin to "
-                        f"{chat_title}."
+                        "Error: admin rights required to add a bot as admin to " f"{chat_title}."
                     )
                 except Exception as admin_err:
                     return log_and_format_error(
@@ -449,24 +448,29 @@ async def get_participants(
         cl = get_client(account)
         await ensure_connected(cl)
 
+        # iter_participants takes no `offset`, and its `limit` is not honoured
+        # for basic groups. Fetch through the page, then slice it out.
         offset = (page - 1) * page_size
-        all_fetched = []
+        participants = []
         async for participant in cl.iter_participants(chat_id, limit=offset + page_size):
-            all_fetched.append(participant)
-        participants = all_fetched[offset:]
+            participants.append(participant)
+        participants = participants[offset : offset + page_size]
 
         if not participants:
             return format_tool_result([])
 
-        records = [
-            {
+        records = []
+        for p in participants:
+            rec = {
                 "id": p.id,
                 "name": sanitize_name(
                     f"{getattr(p, 'first_name', '')} {getattr(p, 'last_name', '')}".strip()
                 ),
             }
-            for p in participants
-        ]
+            uname = getattr(p, "username", None)
+            if uname:
+                rec["username"] = sanitize_name(uname)
+            records.append(rec)
         result = format_tool_result(records)
 
         # Append pagination metadata; has_more indicates whether a next page likely exists
@@ -1125,15 +1129,18 @@ async def get_admins(chat_id: Union[int, str], account: str = None) -> str:
         await ensure_connected(cl)
         # Fix: Use the correct filter type ChannelParticipantsAdmins
         participants = await cl.get_participants(chat_id, filter=ChannelParticipantsAdmins())
-        records = [
-            {
+        records = []
+        for p in participants:
+            rec = {
                 "id": p.id,
                 "name": sanitize_name(
                     f"{getattr(p, 'first_name', '')} {getattr(p, 'last_name', '')}".strip()
                 ),
             }
-            for p in participants
-        ]
+            uname = getattr(p, "username", None)
+            if uname:
+                rec["username"] = sanitize_name(uname)
+            records.append(rec)
         return format_tool_result(records) if records else "No admins found."
     except Exception as e:
         logger.exception(f"get_admins failed (chat_id={chat_id})")
@@ -1156,15 +1163,18 @@ async def get_banned_users(chat_id: Union[int, str], account: str = None) -> str
         await ensure_connected(cl)
         # Fix: Use the correct filter type ChannelParticipantsKicked
         participants = await cl.get_participants(chat_id, filter=ChannelParticipantsKicked(q=""))
-        records = [
-            {
+        records = []
+        for p in participants:
+            rec = {
                 "id": p.id,
                 "name": sanitize_name(
                     f"{getattr(p, 'first_name', '')} {getattr(p, 'last_name', '')}".strip()
                 ),
             }
-            for p in participants
-        ]
+            uname = getattr(p, "username", None)
+            if uname:
+                rec["username"] = sanitize_name(uname)
+            records.append(rec)
         return format_tool_result(records) if records else "No banned users found."
     except Exception as e:
         logger.exception(f"get_banned_users failed (chat_id={chat_id})")
