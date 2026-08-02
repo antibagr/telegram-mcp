@@ -14,7 +14,7 @@ services:
     volumes:
       - ./tg-files:/data
     ports:
-      - "18797:18797"
+      - "127.0.0.1:18797:18797"
     restart: unless-stopped
     logging:
       driver: json-file

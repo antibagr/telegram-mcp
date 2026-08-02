@@ -389,6 +389,19 @@ def with_account(readonly=False):
 
 _last_conn_verified: dict[int, float] = {}
 _CONN_VERIFY_INTERVAL: float = 30.0  # seconds between live pings
+_DISCONNECT_TIMEOUT_SECONDS: float = 3.0
+_CONNECT_TIMEOUT_SECONDS: float = 10.0
+_AUTH_CHECK_TIMEOUT_SECONDS: float = 5.0
+_START_TIMEOUT_SECONDS: float = 20.0
+_PROFILE_REQUEST_TIMEOUT_SECONDS: float = 20.0
+
+
+async def _wait_for_telegram(awaitable, timeout: float, operation: str):
+    """Run one Telegram operation with a useful, bounded timeout error."""
+    try:
+        return await asyncio.wait_for(awaitable, timeout=timeout)
+    except asyncio.TimeoutError as exc:
+        raise TimeoutError(f"Telegram {operation} timed out after {timeout:g}s") from exc
 
 
 async def _force_reconnect(cl: TelegramClient):
@@ -396,13 +409,18 @@ async def _force_reconnect(cl: TelegramClient):
     reconnect_logger = logging.getLogger("telegram_mcp")
     reconnect_logger.warning("Forcing reconnect...")
     try:
-        await cl.disconnect()
+        await _wait_for_telegram(
+            cl.disconnect(), _DISCONNECT_TIMEOUT_SECONDS, "disconnect"
+        )
     except Exception:
         pass
-    await cl.connect()
-    if not await cl.is_user_authorized():
+    await _wait_for_telegram(cl.connect(), _CONNECT_TIMEOUT_SECONDS, "connect")
+    is_authorized = await _wait_for_telegram(
+        cl.is_user_authorized(), _AUTH_CHECK_TIMEOUT_SECONDS, "authorization check"
+    )
+    if not is_authorized:
         reconnect_logger.warning("Client not authorized after reconnect, calling start()...")
-        await cl.start()
+        await _wait_for_telegram(cl.start(), _START_TIMEOUT_SECONDS, "authorization")
     _last_conn_verified[id(cl)] = time.time()
     reconnect_logger.warning("Forced reconnect successful")
 
@@ -440,6 +458,18 @@ async def ensure_connected(cl: TelegramClient = None):
         _last_conn_verified[key] = now
     except (ConnectionError, OSError, asyncio.TimeoutError, Exception):
         await _force_reconnect(cl)
+
+
+async def get_me_with_timeout(cl: TelegramClient):
+    """Return the current account profile without allowing stale clients to hang MCP calls."""
+
+    async def _get_profile():
+        await ensure_connected(cl)
+        return await cl.get_me()
+
+    return await _wait_for_telegram(
+        _get_profile(), _PROFILE_REQUEST_TIMEOUT_SECONDS, "profile request"
+    )
 
 
 # Setup robust logging with both file and console output
@@ -1146,6 +1176,74 @@ def _configure_allowed_roots_from_cli(argv: Optional[List[str]] = None) -> None:
 
     global SERVER_ALLOWED_ROOTS
     SERVER_ALLOWED_ROOTS = _dedupe_paths(resolved_roots)
+
+
+# --- Native (Telegram Premium) speech-to-text --------------------------------
+# Telegram transcribes voice notes, video notes, and audio server-side via
+# messages.transcribeAudio. Requires the logged-in account to have Premium.
+
+TRANSCRIBE_MAX_WAIT_SECONDS = 45
+TRANSCRIBE_CONCURRENCY = 5
+
+
+def message_is_transcribable(msg) -> bool:
+    """True if the message carries audio Telegram can transcribe."""
+    return (
+        getattr(msg, "voice", None) is not None
+        or getattr(msg, "video_note", None) is not None
+        or getattr(msg, "audio", None) is not None
+    )
+
+
+async def transcribe_message_text(cl, entity, msg_id, max_wait_seconds=TRANSCRIBE_MAX_WAIT_SECONDS):
+    """Transcribe one audio message natively. Returns (text, pending).
+
+    Long clips first come back ``pending`` while Telegram processes them, so we
+    re-poll the same request (idempotent — same transcription_id) until it
+    resolves or ``max_wait_seconds`` elapses.
+    """
+    result = await cl(functions.messages.TranscribeAudioRequest(peer=entity, msg_id=msg_id))
+    deadline = time.time() + max(1, int(max_wait_seconds))
+    while getattr(result, "pending", False) and time.time() < deadline:
+        await asyncio.sleep(1.5)
+        result = await cl(functions.messages.TranscribeAudioRequest(peer=entity, msg_id=msg_id))
+    return (getattr(result, "text", "") or "", bool(getattr(result, "pending", False)))
+
+
+async def attach_transcriptions(
+    cl,
+    entity,
+    messages,
+    records,
+    max_wait_seconds=TRANSCRIBE_MAX_WAIT_SECONDS,
+    concurrency=TRANSCRIBE_CONCURRENCY,
+):
+    """Transcribe every audio message in ``messages`` in parallel and inline the
+    text into the matching ``records`` entry (same index).
+
+    ``records[i]`` gains ``transcription`` (or ``transcription_error`` / the
+    ``transcription_pending`` flag). Non-audio messages are untouched. Returns
+    ``records`` for convenience.
+    """
+    targets = [(i, m) for i, m in enumerate(messages) if message_is_transcribable(m)]
+    if not targets:
+        return records
+    sem = asyncio.Semaphore(max(1, concurrency))
+
+    async def _one(i, m):
+        async with sem:
+            try:
+                text, pending = await transcribe_message_text(cl, entity, m.id, max_wait_seconds)
+            except Exception as e:
+                records[i]["transcription_error"] = str(e)
+                return
+            if text:
+                records[i]["transcription"] = text
+            if pending and not text:
+                records[i]["transcription_pending"] = True
+
+    await asyncio.gather(*[_one(i, m) for i, m in targets])
+    return records
 
 
 # Re-export shared runtime names for tool modules that use star imports.

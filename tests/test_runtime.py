@@ -1,3 +1,4 @@
+import asyncio
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -374,6 +375,34 @@ async def test_ensure_connected_skips_recently_verified_client(monkeypatch):
     await runtime.ensure_connected(client)
 
     assert client.calls == ["is_connected"]
+
+
+@pytest.mark.asyncio
+async def test_force_reconnect_times_out_instead_of_hanging(monkeypatch):
+    client = _ConnectivityClient(connected=False)
+
+    async def hanging_connect():
+        await asyncio.Event().wait()
+
+    client.connect = hanging_connect
+    monkeypatch.setattr(runtime, "_CONNECT_TIMEOUT_SECONDS", 0.01)
+
+    with pytest.raises(TimeoutError, match="Telegram connect timed out"):
+        await runtime._force_reconnect(client)
+
+
+@pytest.mark.asyncio
+async def test_get_me_with_timeout_bounds_stale_connection(monkeypatch):
+    client = _ConnectivityClient(connected=True)
+
+    async def hanging_ensure_connected(_client):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(runtime, "ensure_connected", hanging_ensure_connected)
+    monkeypatch.setattr(runtime, "_PROFILE_REQUEST_TIMEOUT_SECONDS", 0.01)
+
+    with pytest.raises(TimeoutError, match="Telegram profile request timed out"):
+        await runtime.get_me_with_timeout(client)
 
 
 class _ResolvingClient:

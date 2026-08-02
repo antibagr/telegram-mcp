@@ -13,7 +13,7 @@ async def list_accounts() -> str:
     lines = []
     for label, cl in clients.items():
         try:
-            me = await cl.get_me()
+            me = await get_me_with_timeout(cl)
             raw_name = f"{me.first_name or ''} {me.last_name or ''}".strip() or "Unknown"
             name = sanitize_name(raw_name)
             phone = me.phone or "N/A"
