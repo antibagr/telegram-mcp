@@ -541,9 +541,7 @@ async def _force_reconnect(cl: TelegramClient):
     reconnect_logger = logging.getLogger("telegram_mcp")
     reconnect_logger.warning("Forcing reconnect...")
     try:
-        await _wait_for_telegram(
-            cl.disconnect(), _DISCONNECT_TIMEOUT_SECONDS, "disconnect"
-        )
+        await _wait_for_telegram(cl.disconnect(), _DISCONNECT_TIMEOUT_SECONDS, "disconnect")
     except Exception:
         pass
     await _wait_for_telegram(cl.connect(), _CONNECT_TIMEOUT_SECONDS, "connect")
@@ -1439,7 +1437,9 @@ def message_is_transcribable(msg) -> bool:
     )
 
 
-async def transcribe_message_text(cl, entity, msg_id, max_wait_seconds=TRANSCRIBE_MAX_WAIT_SECONDS):
+async def transcribe_message_text(
+    cl, entity, msg_id, max_wait_seconds=TRANSCRIBE_MAX_WAIT_SECONDS
+):
     """Transcribe one audio message natively. Returns (text, pending).
 
     Long clips first come back ``pending`` while Telegram processes them, so we

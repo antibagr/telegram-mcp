@@ -1028,9 +1028,7 @@ async def forward_message(
                     ids_to_forward = sibling_ids
                     expanded_from_album = True
 
-        id_list = (
-            ids_to_forward if isinstance(ids_to_forward, list) else [ids_to_forward]
-        )
+        id_list = ids_to_forward if isinstance(ids_to_forward, list) else [ids_to_forward]
 
         # Raw ForwardMessagesRequest so silent + top_msg_id (forum/topic
         # targeting) are honored; the high-level forward_messages helper does

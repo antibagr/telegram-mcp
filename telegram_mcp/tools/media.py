@@ -437,9 +437,7 @@ async def transcribe_audio(
         }
         return json.dumps(payload, indent=2, ensure_ascii=False, default=json_serializer)
     except Exception as e:
-        return log_and_format_error(
-            "transcribe_audio", e, chat_id=chat_id, message_id=message_id
-        )
+        return log_and_format_error("transcribe_audio", e, chat_id=chat_id, message_id=message_id)
 
 
 @mcp.tool(annotations=ToolAnnotations(title="Send Gif", openWorldHint=True, destructiveHint=True))
