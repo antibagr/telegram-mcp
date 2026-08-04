@@ -700,30 +700,58 @@ def test_message_formatting_sender_and_engagement_helpers():
     assert runtime.get_engagement_dict(SimpleNamespace()) is None
 
 
-def test_log_and_format_error_returns_custom_and_generated_messages(caplog):
-    custom = runtime.log_and_format_error(
-        "validate_user",
-        runtime.ValidationError("bad"),
-        prefix="VALIDATION-001",
-        user_message="bad input",
-        user_id="abc",
-    )
-    assert custom == "bad input"
+def test_log_and_format_error_raises_tool_execution_errors(caplog):
+    """MCP spec: API/validation/business errors are tool execution errors, so they
+    must raise (-> CallToolResult isError=true), never return a success string.
+    https://modelcontextprotocol.io/specification/draft/server/tools#error-handling
+    """
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    with pytest.raises(ToolError, match="bad input"):
+        runtime.log_and_format_error(
+            "validate_user",
+            runtime.ValidationError("bad"),
+            prefix="VALIDATION-001",
+            user_message="bad input",
+            user_id="abc",
+        )
 
     # The agent cannot read mcp_errors.log inside the container, so the exception
     # itself has to come back over the wire.
-    generated = runtime.log_and_format_error("get_chat", RuntimeError("boom"))
-    assert "RuntimeError: boom" in generated
-    assert "get_chat" in generated
+    with pytest.raises(ToolError, match="RuntimeError: boom"):
+        runtime.log_and_format_error("get_chat", RuntimeError("boom"))
 
     # Telegram's own status code and error string must survive too, including on
     # typed subclasses whose str() omits them.
     from telethon.errors import FloodWaitError
 
-    flood = runtime.log_and_format_error("get_history", FloodWaitError(request=None, capture=26))
-    assert "FloodWaitError" in flood
-    assert "26 seconds" in flood
-    assert "[Telegram 420 FLOOD]" in flood
+    with pytest.raises(ToolError) as excinfo:
+        runtime.log_and_format_error("get_history", FloodWaitError(request=None, capture=26))
+    assert "FloodWaitError" in str(excinfo.value)
+    assert "26 seconds" in str(excinfo.value)
+    assert "[Telegram 420 FLOOD]" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_failing_tool_is_reported_as_tool_execution_error():
+    """End-to-end through the serving path: a failing tool must come back as
+    isError=true carrying the real exception, not as a successful call.
+    """
+    server = MCPServer("probe")
+
+    @server.tool()
+    async def explode() -> str:
+        try:
+            raise RuntimeError("kaboom")
+        except RuntimeError as exc:
+            return runtime.log_and_format_error("explode", exc)
+
+    from mcp.types import CallToolRequestParams
+
+    result = await server._handle_call_tool(None, CallToolRequestParams(name="explode"))
+
+    assert result.is_error is True
+    assert "RuntimeError: kaboom" in result.content[0].text
 
 
 def test_path_helper_edges(tmp_path, monkeypatch):

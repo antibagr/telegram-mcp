@@ -19,6 +19,7 @@ from urllib.parse import unquote, urlparse
 # Third-party libraries
 from dotenv import load_dotenv
 from mcp.server.mcpserver import MCPServer, Context
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import Annotations, TextContent, ToolAnnotations
 from mcp.shared.exceptions import MCPError
 from pythonjsonlogger import jsonlogger
@@ -748,19 +749,24 @@ def log_and_format_error(
     # Log the full technical error
     logger.error(f"Error in {function_name} ({context}) - Code: {error_code}", exc_info=True)
 
-    # A caller-supplied message is already specific (validation errors quote the
-    # offending value), so it stands on its own.
+    # MCP spec, Tools > Error Handling: API failures, input validation errors and
+    # business logic errors are *tool execution errors*, reported in the result with
+    # isError: true so the model can self-correct — not returned as a string, which
+    # reports the call as successful. Raising is how that happens: the tool runner
+    # wraps any non-MCPError exception into CallToolResult(is_error=True) carrying
+    # str(exc), and prefixes the tool name itself.
+    # https://modelcontextprotocol.io/specification/draft/server/tools#error-handling
+    #
+    # The agent cannot read mcp_errors.log inside the container, so the message has to
+    # carry the real exception, plus Telegram's own status code and error string when
+    # Telegram is the one refusing — typed Telethon subclasses omit both from str().
     if user_message:
-        return user_message
+        raise ToolError(user_message) from error
 
-    # The consumer is an agent, not an end user, and it cannot read mcp_errors.log
-    # inside the container. Hand back the real exception, plus Telegram's own status
-    # code and error string when Telegram is the one refusing — a hashed error code
-    # the agent can never look up is worse than useless.
     detail = f"{type(error).__name__}: {error}"
     if isinstance(error, telethon.errors.RPCError):
         detail += f" [Telegram {error.code} {error.message}]"
-    return f"{function_name} failed — {detail}"
+    raise ToolError(detail) from error
 
 
 def validate_id(*param_names_to_validate):
@@ -812,7 +818,10 @@ def validate_id(*param_names_to_validate):
                                 return value, None
                             # Unknown or ambiguous reference: hand the agent an
                             # instruction to ask the user instead of a dead end.
-                            return None, alias_ask_payload(value)
+                            # AliasNeedsUser marks it as control flow, so it is
+                            # returned as a normal result rather than raised as a
+                            # tool execution error.
+                            return None, AliasNeedsUser(alias_ask_payload(value))
 
                     # Handle other invalid types
                     return (
@@ -825,6 +834,8 @@ def validate_id(*param_names_to_validate):
                     for item in param_value:
                         validated_item, error_msg = validate_single_id(item, param_name)
                         if error_msg:
+                            if isinstance(error_msg, AliasNeedsUser):
+                                return error_msg.payload
                             return log_and_format_error(
                                 func.__name__,
                                 ValidationError(error_msg),
@@ -837,6 +848,8 @@ def validate_id(*param_names_to_validate):
                 else:
                     validated_value, error_msg = validate_single_id(param_value, param_name)
                     if error_msg:
+                        if isinstance(error_msg, AliasNeedsUser):
+                            return error_msg.payload
                         return log_and_format_error(
                             func.__name__,
                             ValidationError(error_msg),

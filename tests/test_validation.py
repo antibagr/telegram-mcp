@@ -2,6 +2,8 @@ import json
 
 import pytest
 
+from mcp.server.mcpserver.exceptions import ToolError
+
 from main import validate_id
 from telegram_mcp import runtime
 
@@ -56,9 +58,12 @@ async def test_valid_list_of_ids():
 
 @pytest.mark.asyncio
 async def test_invalid_float_id():
-    result = await dummy_function(user_id=123.45)
-    assert "Invalid user_id" in result
-    assert "Type must be an integer or a string" in result
+    # MCP spec: input validation errors are tool execution errors, so they raise
+    # (-> CallToolResult isError=true) rather than returning a success string.
+    with pytest.raises(ToolError) as excinfo:
+        await dummy_function(user_id=123.45)
+    assert "Invalid user_id" in str(excinfo.value)
+    assert "Type must be an integer or a string" in str(excinfo.value)
 
 
 @pytest.mark.asyncio
@@ -103,16 +108,18 @@ async def test_lookalike_alias_is_not_substituted(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_integer_out_of_range():
-    result = await dummy_function(user_id=2**64)
-    assert "Invalid user_id" in result
-    assert "out of the valid integer range" in result
+    with pytest.raises(ToolError) as excinfo:
+        await dummy_function(user_id=2**64)
+    assert "Invalid user_id" in str(excinfo.value)
+    assert "out of the valid integer range" in str(excinfo.value)
 
 
 @pytest.mark.asyncio
 async def test_invalid_item_in_list():
-    result = await dummy_function(user_ids=[123, "456", 123.45])
-    assert "Invalid user_ids" in result
-    assert "Type must be an integer or a string" in result
+    with pytest.raises(ToolError) as excinfo:
+        await dummy_function(user_ids=[123, "456", 123.45])
+    assert "Invalid user_ids" in str(excinfo.value)
+    assert "Type must be an integer or a string" in str(excinfo.value)
 
 
 @pytest.mark.asyncio

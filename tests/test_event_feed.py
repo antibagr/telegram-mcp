@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 
 from telegram_mcp.tools import events
 
@@ -139,9 +140,12 @@ async def test_enable_with_unwritable_path_starts_nothing(monkeypatch, tmp_path)
     monkeypatch.setenv("TELEGRAM_EVENT_FEED_FILE", str(tmp_path / "missing" / "feed.jsonl"))
     events._pending_msgs[42] = _pending_record(_mono(1.0))
 
-    out = await events.enable_incoming_feed(settle_ms=100)
+    # A failed enable is a tool execution error, so it raises rather than returning
+    # a status blob — but it must still leave nothing half-started behind.
+    with pytest.raises(ToolError) as excinfo:
+        await events.enable_incoming_feed(settle_ms=100)
+    assert "FileNotFoundError" in str(excinfo.value)
 
-    assert not out.startswith("{")  # error string, not a status blob
     assert events.feed_enabled() is False  # no orphan consumer
     await asyncio.sleep(0.3)
     assert 42 in events._pending_msgs  # burst still available to wait_for_settled_message
