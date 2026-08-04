@@ -45,13 +45,35 @@ The server currently includes 80+ MCP tools grouped into these areas:
 
 - **Accounts:** list configured accounts and route tool calls by account label.
 - **Chats and groups:** list chats, inspect metadata, create groups/channels, join or leave chats, invite users, manage admins, bans, default permissions, slow mode, topics, invite links, common chats, read receipts, and message links.
-- **Messages:** send, schedule, edit, delete, forward, pin, unpin, mark read, reply, search, inspect context, create polls, manage reactions, inspect inline buttons, and press inline callbacks.
-- **Contacts:** list, search, add, delete, block, unblock, import, export, inspect direct chats, find recent contact interactions, and manage favorite aliases (e.g. save "andrew" so any tool accepting a `chat_id` resolves it; searches check favorites first).
+- **Messages:** send, schedule, edit, delete, forward, pin, unpin, mark read, reply, search, inspect context, create polls, manage reactions, inspect inline buttons, and press inline callbacks. `send_message`, `reply_to_message`, and `edit_message` support classic formatting (`parse_mode='md'`/`'html'`) and server-side rich formatting (`parse_mode='rich'`/`'rich_markdown'`/`'rich_html'` — full Markdown/HTML with tables, headings, formulas, and collapsible sections). Rich modes require Telegram Premium on the account; Premium is re-checked on every call, and without it nothing is sent — the tool returns a structured `telegram_premium_required` result so the agent can reformat with classic modes and retry.
+- **Contacts:** list, search, add, delete, block, unblock, import, export, inspect direct chats, find recent contact interactions, and remember contacts by the names you actually use (see below).
+
+### Remembered contacts
+
+`set_contact_alias` teaches the server what you call someone, and every tool that takes a `chat_id` understands it from then on — `send_message("андрей бекендер", ...)` just works. A contact can carry any number of aliases, which is how tags work: save both `андрей бекендер` and `бекендер` for the same person and either resolves.
+
+**Only an exact saved wording ever sends.** Similar wording (`Андрею бекендеру` for a saved `андрей бекендер`) is matched too, but only to *suggest*: the tool sends nothing and asks you to confirm the contact by name. This is deliberate — `Лена`/`Леня` and `Иван`/`Иванов` differ exactly as much as a case ending does, so a matcher confident enough to handle declensions is also confident enough to message the wrong person whenever the one you meant is not saved yet. Confirming saves that wording as its own alias, so each new phrasing costs one yes/no the first time and nothing ever again. Set `TELEGRAM_CONTACT_FUZZY=0` to drop the suggestions too.
+
+When a reference is unknown, resembles one contact, matches several, or points at a contact that no longer resolves, tools send nothing and return a structured instruction telling the agent exactly what to ask you, to save the answer with `set_contact_alias`, and to retry once. `list_contact_aliases` shows one row per person with all their aliases (use it to spot a wrong memory), `delete_contact_alias` forgets one, and repointing an alias at someone else requires `replace=True`. The save path itself refuses a target it would have to guess at: contacts are saved by @username, phone, numeric ID, or an alias already confirmed for them.
+
+Aliases live in `${XDG_STATE_HOME:-~/.local/state}/telegram-mcp/aliases.json` (owner-only, written atomically); `TELEGRAM_ALIASES_FILE` overrides the path, and a pre-existing `aliases.json` next to the code is still read as a fallback.
 - **Media:** send files, download media, upload files, send voice notes, stickers, GIFs, and inspect message media.
 - **Profile and privacy:** get your own account info, update profile fields, set or delete profile photos, inspect privacy settings, get user info/photos/status, and manage bot commands.
 - **Folders and drafts:** list, create, update, reorder, and delete Telegram folders; save, list, and clear drafts.
+- **Events:** wait for incoming messages with debounce (`wait_for_new_message`, `wait_for_settled_message`), or enable the opt-in incoming event feed for callback-style delivery (see below).
 
 All tool results that include Telegram user-controlled content are sanitized and, where practical, returned as structured JSON.
+
+### Incoming Event Feed (callback mode, Claude Code only)
+
+By default, an agent waits for replies by calling `wait_for_settled_message`, which blocks up to the MCP tool timeout and must be re-called — that works everywhere (Codex, Cursor, etc.) and is unchanged.
+
+Clients that can wake an agent on external output (Claude Code's persistent `Monitor` on `tail -f`) can switch to callback mode instead:
+
+1. The agent calls `enable_incoming_feed` (or set `TELEGRAM_EVENT_FEED=1` in the environment to auto-enable). Each settled incoming burst is appended as one JSON line to `${XDG_STATE_HOME:-~/.local/state}/telegram-mcp/incoming_feed.jsonl`, created owner-only (0600). Override the path with `TELEGRAM_EVENT_FEED_FILE` — an explicit path's directory must already exist. `incoming_feed_status` reports the effective path and a ready-to-use watch command.
+2. The agent arms a persistent Monitor with the `watch_command` returned by the tool. Every new line re-invokes the agent with the burst summary; no blocking tool call is held open, and the chat stays free.
+
+`disable_incoming_feed` switches back; `incoming_feed_status` reports the current mode. While the feed is enabled it consumes settled bursts, so don't combine it with `wait_for_settled_message`. Feed lines contain user-generated `name` fields — treat them as untrusted data.
 
 ## Requirements
 
