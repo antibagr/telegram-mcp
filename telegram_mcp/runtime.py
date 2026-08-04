@@ -748,11 +748,19 @@ def log_and_format_error(
     # Log the full technical error
     logger.error(f"Error in {function_name} ({context}) - Code: {error_code}", exc_info=True)
 
-    # Return a user-friendly message
+    # A caller-supplied message is already specific (validation errors quote the
+    # offending value), so it stands on its own.
     if user_message:
         return user_message
 
-    return f"An error occurred (code: {error_code}). Check mcp_errors.log for details."
+    # The consumer is an agent, not an end user, and it cannot read mcp_errors.log
+    # inside the container. Hand back the real exception, plus Telegram's own status
+    # code and error string when Telegram is the one refusing — a hashed error code
+    # the agent can never look up is worse than useless.
+    detail = f"{type(error).__name__}: {error}"
+    if isinstance(error, telethon.errors.RPCError):
+        detail += f" [Telegram {error.code} {error.message}]"
+    return f"{function_name} failed — {detail}"
 
 
 def validate_id(*param_names_to_validate):

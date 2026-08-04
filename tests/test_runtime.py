@@ -710,9 +710,20 @@ def test_log_and_format_error_returns_custom_and_generated_messages(caplog):
     )
     assert custom == "bad input"
 
+    # The agent cannot read mcp_errors.log inside the container, so the exception
+    # itself has to come back over the wire.
     generated = runtime.log_and_format_error("get_chat", RuntimeError("boom"))
-    assert "code: CHAT-ERR-" in generated
-    assert "Check mcp_errors.log" in generated
+    assert "RuntimeError: boom" in generated
+    assert "get_chat" in generated
+
+    # Telegram's own status code and error string must survive too, including on
+    # typed subclasses whose str() omits them.
+    from telethon.errors import FloodWaitError
+
+    flood = runtime.log_and_format_error("get_history", FloodWaitError(request=None, capture=26))
+    assert "FloodWaitError" in flood
+    assert "26 seconds" in flood
+    assert "[Telegram 420 FLOOD]" in flood
 
 
 def test_path_helper_edges(tmp_path, monkeypatch):
