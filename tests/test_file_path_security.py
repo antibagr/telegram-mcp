@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 from mcp import types
-from mcp.shared.exceptions import McpError
+from mcp.shared.exceptions import MCPError
 from mcp.types import ErrorData
 
 import main
@@ -154,7 +154,7 @@ async def test_mcp_method_not_found_falls_back_to_server_allowlist(tmp_path, mon
     server_root.mkdir(parents=True)
 
     monkeypatch.setattr(main, "SERVER_ALLOWED_ROOTS", [server_root])
-    ctx = _FailingContext(McpError(ErrorData(code=-32601, message="Method not found")))
+    ctx = _FailingContext(MCPError(code=-32601, message="Method not found"))
 
     roots = await main._get_effective_allowed_roots(ctx)
     assert roots == [server_root]

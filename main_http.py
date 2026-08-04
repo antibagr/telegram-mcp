@@ -18,6 +18,7 @@ except UnsafeInstallationError as exc:
     raise SystemExit(str(exc)) from None
 
 from telegram_mcp.runtime import (
+    STATELESS_HTTP,
     _configure_allowed_roots_from_cli,
     clients,
     mcp,
@@ -58,25 +59,26 @@ async def _main() -> None:
             file=sys.stderr,
         )
 
-        mcp.settings.host = "0.0.0.0"
-        mcp.settings.port = PORT
-        mcp.settings.transport_security = _sh.TransportSecuritySettings(
-            enable_dns_rebinding_protection=True,
-            allowed_hosts=[
-                "127.0.0.1:*",
-                "localhost:*",
-                "[::1]:*",
-                "host.docker.internal:*",
-            ],
-            allowed_origins=[
-                "http://127.0.0.1:*",
-                "http://localhost:*",
-                "http://[::1]:*",
-                "http://host.docker.internal:*",
-            ],
+        await mcp.run_streamable_http_async(
+            host="0.0.0.0",
+            port=PORT,
+            stateless_http=STATELESS_HTTP,
+            transport_security=_sh.TransportSecuritySettings(
+                enable_dns_rebinding_protection=True,
+                allowed_hosts=[
+                    "127.0.0.1:*",
+                    "localhost:*",
+                    "[::1]:*",
+                    "host.docker.internal:*",
+                ],
+                allowed_origins=[
+                    "http://127.0.0.1:*",
+                    "http://localhost:*",
+                    "http://[::1]:*",
+                    "http://host.docker.internal:*",
+                ],
+            ),
         )
-
-        await mcp.run_streamable_http_async()
     except Exception as e:
         print(f"Error starting client: {e}", file=sys.stderr)
         if isinstance(e, sqlite3.OperationalError) and "database is locked" in str(e):

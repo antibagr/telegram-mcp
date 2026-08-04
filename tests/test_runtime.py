@@ -5,8 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from mcp.server.fastmcp import FastMCP
-from mcp.shared.exceptions import McpError
+from mcp.server.mcpserver import MCPServer
+from mcp.shared.exceptions import MCPError
 from mcp.types import ErrorData, ToolAnnotations
 from telethon.tl.types import Channel, Chat, PeerUser, User
 
@@ -31,7 +31,7 @@ def _tool_names(server):
 
 
 def _synthetic_mcp():
-    server = FastMCP("test")
+    server = MCPServer("test")
 
     @server.tool(annotations=ToolAnnotations(title="Read", readOnlyHint=True))
     def read_tool():
@@ -46,7 +46,7 @@ def _synthetic_mcp():
 
 def test_shared_server_uses_stateless_http_transport():
     """A service restart must not invalidate long-lived Streamable HTTP clients."""
-    assert runtime.mcp.settings.stateless_http is True
+    assert runtime.STATELESS_HTTP is True
 
 
 def test_get_exposed_tools_mode_defaults_to_all(monkeypatch):
@@ -799,7 +799,7 @@ def test_roots_unsupported_detection():
     assert runtime._is_roots_unsupported_error(AttributeError("other")) is False
     assert (
         runtime._is_roots_unsupported_error(
-            McpError(ErrorData(code=-32000, message="not implemented"))
+            MCPError(code=-32000, message="not implemented")
         )
         is True
     )
@@ -999,3 +999,35 @@ async def test_list_roots_unexpected_error_denies_without_opt_in(tmp_path, monke
     )
     assert status == runtime.ROOTS_STATUS_ERROR
     assert roots == []
+
+
+@pytest.mark.asyncio
+async def test_tool_results_are_annotated_for_user_audience():
+    """Tool output is user data, not model instructions — the middleware must say so."""
+    from mcp.types import CallToolResult, TextContent
+
+    middleware = runtime.mcp.middleware[-1]
+    ctx = SimpleNamespace(method="tools/call")
+
+    async def call_next(_ctx):
+        return CallToolResult(content=[TextContent(type="text", text="hi")])
+
+    result = await middleware(ctx, call_next)
+
+    assert result.content[0].annotations.audience == ["user"]
+
+
+@pytest.mark.asyncio
+async def test_non_tool_results_are_left_alone():
+    from mcp.types import CallToolResult, TextContent
+
+    middleware = runtime.mcp.middleware[-1]
+    ctx = SimpleNamespace(method="tools/list")
+    block = TextContent(type="text", text="hi")
+
+    async def call_next(_ctx):
+        return CallToolResult(content=[block])
+
+    result = await middleware(ctx, call_next)
+
+    assert result.content[0].annotations is None

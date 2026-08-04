@@ -18,9 +18,9 @@ from urllib.parse import unquote, urlparse
 
 # Third-party libraries
 from dotenv import load_dotenv
-from mcp.server.fastmcp import FastMCP, Context
+from mcp.server.mcpserver import MCPServer, Context
 from mcp.types import Annotations, TextContent, ToolAnnotations
-from mcp.shared.exceptions import McpError
+from mcp.shared.exceptions import MCPError
 from pythonjsonlogger import jsonlogger
 from telethon import TelegramClient, functions, types, utils
 from telethon.sessions import StringSession
@@ -113,39 +113,40 @@ load_dotenv()
 TELEGRAM_API_ID = int(os.getenv("TELEGRAM_API_ID"))
 TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH")
 
+mcp = MCPServer("telegram")
+
 # The shared HTTP service can be consumed by long-lived MCP clients. Stateless requests keep
 # those clients usable across server-process restarts instead of rejecting their next call
-# with "No valid session ID provided". Stdio transport remains unaffected.
-mcp = FastMCP("telegram", stateless_http=True)
+# with "No valid session ID provided". Stdio transport remains unaffected. Passed to
+# run_streamable_http_async() by every HTTP entrypoint — mcp 2.x takes it per-run rather
+# than on the server constructor.
+STATELESS_HTTP = True
 
 # Annotate all tool results with audience=["user"] so MCP clients know
 # the content is user-generated data, not instructions for the model.
-# We wrap the low-level request handler (after FastMCP registers it) to inject
-# annotations into the final CallToolResult, preserving structured output.
+# Runs as context-tier middleware so annotations land on the final
+# CallToolResult, preserving structured output.
 _USER_AUDIENCE = Annotations(audience=["user"])
 
 
 def _install_annotation_hook() -> None:
-    from mcp.types import CallToolRequest, ServerResult, CallToolResult
+    from mcp.types import CallToolResult
 
-    original_handler = mcp._mcp_server.request_handlers[CallToolRequest]
+    async def annotate_user_audience(ctx, call_next):
+        result = await call_next(ctx)
+        if ctx.method == "tools/call" and isinstance(result, CallToolResult) and result.content:
+            result.content = [
+                (
+                    block.model_copy(update={"annotations": _USER_AUDIENCE})
+                    if isinstance(block, TextContent) and block.annotations is None
+                    else block
+                )
+                for block in result.content
+            ]
+        return result
 
-    async def annotated_handler(req):
-        response = await original_handler(req)
-        if isinstance(response, ServerResult) and isinstance(response.root, CallToolResult):
-            content = response.root.content
-            if content:
-                response.root.content = [
-                    (
-                        block.model_copy(update={"annotations": _USER_AUDIENCE})
-                        if isinstance(block, TextContent) and block.annotations is None
-                        else block
-                    )
-                    for block in content
-                ]
-        return response
-
-    mcp._mcp_server.request_handlers[CallToolRequest] = annotated_handler
+    # Appended, so it sits innermost — closest to the handler that produced the result.
+    mcp.middleware.append(annotate_user_audience)
 
 
 _install_annotation_hook()
@@ -195,7 +196,7 @@ def _get_exposed_tools_mode(value: Optional[str] = None) -> str:
     return f"{base_mode}{_EXPOSED_TOOLS_ALLOW_SEPARATOR}{','.join(allowlist)}"
 
 
-def _apply_exposed_tools_mode(server: FastMCP = mcp, mode: Optional[str] = None) -> list[str]:
+def _apply_exposed_tools_mode(server: MCPServer = mcp, mode: Optional[str] = None) -> list[str]:
     """Prune registered MCP tools according to the configured exposure mode."""
     selected_mode = _get_exposed_tools_mode() if mode is None else _get_exposed_tools_mode(mode)
     base_mode, allowlist = _split_exposed_tools_mode(selected_mode)
@@ -217,7 +218,7 @@ def _apply_exposed_tools_mode(server: FastMCP = mcp, mode: Optional[str] = None)
         if tool.name in allowed:
             continue
         annotations = getattr(tool, "annotations", None)
-        if not getattr(annotations, "readOnlyHint", False):
+        if not getattr(annotations, "read_only_hint", False):
             server._tool_manager.remove_tool(tool.name)
             removed.append(tool.name)
     return removed
@@ -1528,7 +1529,7 @@ async def _get_effective_allowed_roots(ctx: Optional[Context]) -> List[Path]:
 
 
 def _is_roots_unsupported_error(error: Exception) -> bool:
-    if isinstance(error, McpError):
+    if isinstance(error, MCPError):
         error_code = getattr(getattr(error, "error", None), "code", None)
         error_message = (
             getattr(getattr(error, "error", None), "message", None) or str(error)
