@@ -130,19 +130,16 @@ _USER_AUDIENCE = Annotations(audience=["user"])
 
 
 def _install_annotation_hook() -> None:
-    from mcp.types import CallToolResult
+    # ServerRunner._inner serialises the handler result to its wire dict *before*
+    # the middleware chain sees it, so this operates on the dict, not CallToolResult.
+    audience = _USER_AUDIENCE.model_dump(by_alias=True, mode="json", exclude_none=True)
 
     async def annotate_user_audience(ctx, call_next):
         result = await call_next(ctx)
-        if ctx.method == "tools/call" and isinstance(result, CallToolResult) and result.content:
-            result.content = [
-                (
-                    block.model_copy(update={"annotations": _USER_AUDIENCE})
-                    if isinstance(block, TextContent) and block.annotations is None
-                    else block
-                )
-                for block in result.content
-            ]
+        if ctx.method == "tools/call" and isinstance(result, dict):
+            for block in result.get("content") or []:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    block.setdefault("annotations", audience)
         return result
 
     # Appended, so it sits innermost — closest to the handler that produced the result.

@@ -1001,33 +1001,38 @@ async def test_list_roots_unexpected_error_denies_without_opt_in(tmp_path, monke
     assert roots == []
 
 
+def _wire_call_tool_result(text="hi"):
+    """The dict shape ServerRunner._serialize hands to the middleware chain.
+
+    Built through the SDK's own dump so this test tracks the wire format
+    instead of hard-coding a guess at it.
+    """
+    from mcp.types import CallToolResult, TextContent
+
+    result = CallToolResult(content=[TextContent(type="text", text=text)])
+    return result.model_dump(by_alias=True, mode="json", exclude_none=True)
+
+
 @pytest.mark.asyncio
 async def test_tool_results_are_annotated_for_user_audience():
     """Tool output is user data, not model instructions — the middleware must say so."""
-    from mcp.types import CallToolResult, TextContent
-
     middleware = runtime.mcp.middleware[-1]
-    ctx = SimpleNamespace(method="tools/call")
 
     async def call_next(_ctx):
-        return CallToolResult(content=[TextContent(type="text", text="hi")])
+        return _wire_call_tool_result()
 
-    result = await middleware(ctx, call_next)
+    result = await middleware(SimpleNamespace(method="tools/call"), call_next)
 
-    assert result.content[0].annotations.audience == ["user"]
+    assert result["content"][0]["annotations"]["audience"] == ["user"]
 
 
 @pytest.mark.asyncio
 async def test_non_tool_results_are_left_alone():
-    from mcp.types import CallToolResult, TextContent
-
     middleware = runtime.mcp.middleware[-1]
-    ctx = SimpleNamespace(method="tools/list")
-    block = TextContent(type="text", text="hi")
 
     async def call_next(_ctx):
-        return CallToolResult(content=[block])
+        return _wire_call_tool_result()
 
-    result = await middleware(ctx, call_next)
+    result = await middleware(SimpleNamespace(method="tools/list"), call_next)
 
-    assert result.content[0].annotations is None
+    assert "annotations" not in result["content"][0]
