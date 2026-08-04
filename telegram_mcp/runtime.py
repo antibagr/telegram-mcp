@@ -113,7 +113,22 @@ load_dotenv()
 TELEGRAM_API_ID = int(os.getenv("TELEGRAM_API_ID"))
 TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH")
 
-mcp = MCPServer("telegram")
+def _package_version() -> str:
+    """Version straight from pyproject.toml.
+
+    Not importlib.metadata: the Docker image runs `uv sync --no-install-project`
+    and copies source, so the distribution has no metadata there.
+    """
+    import tomllib
+
+    try:
+        with open(Path(__file__).resolve().parent.parent / "pyproject.toml", "rb") as fh:
+            return tomllib.load(fh)["project"]["version"]
+    except (OSError, KeyError, tomllib.TOMLDecodeError):
+        return ""
+
+
+mcp = MCPServer("telegram", version=_package_version())
 
 # The shared HTTP service can be consumed by long-lived MCP clients. Stateless requests keep
 # those clients usable across server-process restarts instead of rejecting their next call

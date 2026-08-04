@@ -38,7 +38,7 @@ RUN apt-get update && \
 WORKDIR /app
 
 COPY --link --from=builder /opt/venv /opt/venv
-COPY --link main.py main_http.py sanitize.py ./
+COPY --link main.py main_http.py sanitize.py pyproject.toml ./
 COPY --link telegram_mcp ./telegram_mcp
 
 RUN chown -R appuser:appuser /app

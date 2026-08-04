@@ -1036,3 +1036,14 @@ async def test_non_tool_results_are_left_alone():
     result = await middleware(SimpleNamespace(method="tools/list"), call_next)
 
     assert "annotations" not in result["content"][0]
+
+
+def test_server_reports_package_version():
+    """serverInfo.version must track pyproject, so a stale image is visible on the wire."""
+    import tomllib
+
+    with open(Path(runtime.__file__).resolve().parent.parent / "pyproject.toml", "rb") as fh:
+        expected = tomllib.load(fh)["project"]["version"]
+
+    assert runtime._package_version() == expected
+    assert expected  # a blank version would defeat the point
