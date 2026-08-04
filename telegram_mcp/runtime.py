@@ -55,7 +55,13 @@ except ImportError:  # pragma: no cover - Windows fallback
 
 from functools import wraps
 import telethon.errors.rpcerrorlist
-from sanitize import sanitize_user_content, sanitize_name, sanitize_dict, format_tool_result
+from sanitize import (
+    sanitize_user_content,
+    sanitize_name,
+    sanitize_dict,
+    format_tool_result,
+    compact_json,
+)
 from telegram_mcp.client_identity import client_identity_kwargs
 
 
@@ -163,6 +169,33 @@ def _install_annotation_hook() -> None:
 
 
 _install_annotation_hook()
+
+
+def disable_string_output_schemas(server: MCPServer = mcp) -> int:
+    """Stop the SDK shipping every tool result twice, JSON-escaped.
+
+    Tools are annotated ``-> str`` and return a JSON string, so the SDK derives an
+    output schema of ``{"result": string}`` and emits the payload as both a text
+    block and, escaped inside ``structuredContent``, as
+    ``{"result": "{\\"id\\": 657291613, ...}"}``. Clients that prefer structured
+    content then hand the agent JSON nested in a JSON string, which costs a second
+    parse and escapes every quote in the payload.
+
+    That schema says only "this returns a string" — it validates nothing worth
+    validating. Clearing it makes ``convert_result`` return the text block alone
+    (``func_metadata.convert_result``: ``if self.output_schema is None``), so the
+    agent gets the compact JSON once. Real per-tool output schemas would be the
+    richer fix, but that means retyping all 124 tools and diverging from upstream.
+    """
+    cleared = 0
+    for tool in server._tool_manager.list_tools():
+        metadata = getattr(tool, "fn_metadata", None)
+        if metadata is not None:
+            metadata.output_schema = None
+            metadata.output_model = None
+        tool.output_schema = None
+        cleared += 1
+    return cleared
 
 
 _EXPOSED_TOOLS_MODES = {"all", "read-only"}

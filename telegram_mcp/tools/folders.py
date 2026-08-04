@@ -172,7 +172,7 @@ async def get_folder(folder_id: int, account: str = None) -> str:
                 "exclude_archived": getattr(target_folder, "exclude_archived", False),
             }
 
-        return json.dumps(folder_data, indent=2, default=json_serializer)
+        return compact_json(folder_data, default=json_serializer)
     except Exception as e:
         logger.exception(f"get_folder failed (folder_id={folder_id})")
         return log_and_format_error("get_folder", e, ErrorCategory.FOLDER, folder_id=folder_id)

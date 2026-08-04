@@ -541,7 +541,7 @@ async def export_contacts(account: Optional[str] = None) -> str:
         await ensure_connected(cl)
         result = await cl(functions.contacts.GetContactsRequest(hash=0))
         users = result.users
-        return json.dumps([format_entity(u) for u in users], indent=2)
+        return compact_json([format_entity(u) for u in users])
     except Exception as e:
         return log_and_format_error("export_contacts", e)
 
@@ -558,7 +558,7 @@ async def get_blocked_users(account: Optional[str] = None) -> str:
         cl = get_client(account)
         await ensure_connected(cl)
         result = await cl(functions.contacts.GetBlockedRequest(offset=0, limit=100))
-        return json.dumps([format_entity(u) for u in result.users], indent=2)
+        return compact_json([format_entity(u) for u in result.users])
     except Exception as e:
         return log_and_format_error("get_blocked_users", e)
 

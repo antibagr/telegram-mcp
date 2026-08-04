@@ -1086,3 +1086,24 @@ def test_server_reports_package_version():
 
     assert runtime._package_version() == expected
     assert expected  # a blank version would defeat the point
+
+
+def test_compact_json_omits_padding_and_keeps_unicode():
+    """Every byte is agent context: no indent, no spaces, no \\uXXXX escapes."""
+    out = runtime.compact_json({"name": "Артём", "id": 1})
+
+    assert out == '{"name":"Артём","id":1}'
+    assert "\n" not in out
+    assert "\\u" not in out
+
+
+def test_no_tool_double_encodes_its_json_into_structured_content():
+    """A `-> str` tool would otherwise ship its JSON twice, escaped, as
+    structuredContent {"result": "{\\"id\\": ...}"} — forcing a second parse."""
+    import telegram_mcp.tools  # noqa: F401 — registers tools and strips the schemas
+
+    tools = runtime.mcp._tool_manager.list_tools()
+
+    assert tools, "no tools registered"
+    assert all(t.output_schema is None for t in tools)
+    assert all(t.fn_metadata.output_schema is None for t in tools)

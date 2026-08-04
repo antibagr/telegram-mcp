@@ -250,7 +250,7 @@ async def upload_file(file_path: str, ctx: Optional[Context] = None, account: st
             "size": getattr(uploaded, "size", safe_path.stat().st_size),
             "md5_checksum": getattr(uploaded, "md5_checksum", None),
         }
-        return json.dumps(payload, indent=2, default=json_serializer)
+        return compact_json(payload, default=json_serializer)
     except Exception as e:
         return log_and_format_error("upload_file", e, file_path=file_path)
 
@@ -295,7 +295,7 @@ async def get_sticker_sets(account: str = None) -> str:
         cl = get_client(account)
         await ensure_connected(cl)
         result = await cl(functions.messages.GetAllStickersRequest(hash=0))
-        return json.dumps([sanitize_name(s.title) for s in result.sets], indent=2)
+        return compact_json([sanitize_name(s.title) for s in result.sets])
     except Exception as e:
         return log_and_format_error("get_sticker_sets", e)
 
@@ -435,7 +435,7 @@ async def transcribe_audio(
             "text": text,
             "pending": pending,
         }
-        return json.dumps(payload, indent=2, ensure_ascii=False, default=json_serializer)
+        return compact_json(payload, default=json_serializer)
     except Exception as e:
         return log_and_format_error("transcribe_audio", e, chat_id=chat_id, message_id=message_id)
 

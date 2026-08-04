@@ -695,7 +695,7 @@ async def search_public_chats(query: str, limit: int = 20, account: str = None) 
         await ensure_connected(cl)
         result = await cl(functions.contacts.SearchRequest(q=query, limit=limit))
         entities = [format_entity(e) for e in result.chats + result.users]
-        return json.dumps(entities, indent=2)
+        return compact_json(entities)
     except Exception as e:
         return log_and_format_error("search_public_chats", e, query=query, limit=limit)
 

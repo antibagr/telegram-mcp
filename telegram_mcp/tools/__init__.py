@@ -10,4 +10,10 @@ from telegram_mcp.tools.profile import *
 from telegram_mcp.tools.folders import *
 from telegram_mcp.tools.events import *
 
+from telegram_mcp.runtime import disable_string_output_schemas
+
+# Runs here rather than in an entrypoint so both main.py and main_http.py get it
+# simply by importing the tools.
+disable_string_output_schemas()
+
 __all__ = [name for name in globals() if not name.startswith("_")]

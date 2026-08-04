@@ -127,6 +127,18 @@ def _json_default(obj: Any) -> Any:
     raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
 
+def compact_json(payload: Any, default: Any = _json_default) -> str:
+    """Serialize a tool result as compact JSON.
+
+    Every byte here is agent context. Indentation is pure padding, and escaping
+    non-ASCII turns each Cyrillic character into a six-byte ``\\uXXXX`` sequence,
+    so a name like ``Артём`` costs 36 bytes instead of 5. Tools that return a
+    bare object or list should use this instead of calling ``json.dumps``
+    directly; ``format_tool_result`` already applies the same settings.
+    """
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=default)
+
+
 def format_tool_result(
     records: List[Dict[str, Any]],
     metadata: Optional[Dict[str, Any]] = None,
@@ -140,4 +152,4 @@ def format_tool_result(
     payload: Dict[str, Any] = {"results": records}
     if metadata:
         payload.update(metadata)
-    return json.dumps(payload, ensure_ascii=False, default=_json_default)
+    return compact_json(payload)

@@ -12,7 +12,7 @@ async def get_me(account: str = None) -> str:
     try:
         cl = get_client(account)
         me = await get_me_with_timeout(cl)
-        return json.dumps(format_entity(me), indent=2)
+        return compact_json(format_entity(me))
     except Exception as e:
         return log_and_format_error("get_me", e)
 
@@ -337,7 +337,7 @@ async def get_bot_info(bot_username: str, account: str = None) -> str:
             info["bot_info"]["about"] = sanitize_user_content(
                 result.full_user.about, max_length=1024
             )
-        return json.dumps(info, indent=2)
+        return compact_json(info)
     except Exception as e:
         logger.exception(f"get_bot_info failed (bot_username={bot_username})")
         return log_and_format_error("get_bot_info", e, bot_username=bot_username)
@@ -411,7 +411,7 @@ async def get_user_photos(user_id: Union[int, str], limit: int = 10, account: st
         photos = await cl(
             functions.photos.GetUserPhotosRequest(user_id=user, offset=0, max_id=0, limit=limit)
         )
-        return json.dumps([p.id for p in photos.photos], indent=2)
+        return compact_json([p.id for p in photos.photos])
     except Exception as e:
         return log_and_format_error("get_user_photos", e, user_id=user_id, limit=limit)
 
