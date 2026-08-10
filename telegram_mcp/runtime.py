@@ -24,6 +24,7 @@ from mcp.types import Annotations, TextContent, ToolAnnotations
 from mcp.shared.exceptions import MCPError
 from pythonjsonlogger import jsonlogger
 from telethon import TelegramClient, functions, types, utils
+from telethon.errors import AuthKeyDuplicatedError
 from telethon.sessions import StringSession
 from telethon.tl.types import (
     User,
@@ -443,13 +444,16 @@ def _acquire_session(pool: List[str]) -> str:
             pass
         print(f"Using Telegram session slot {idx + 1}/{len(pool)}.", file=sys.stderr)
         return session
-    print(
-        f"WARNING: all {len(pool)} pooled Telegram session(s) are already in use "
-        "by other clients; reusing the first (may raise AuthKeyDuplicatedError). "
-        "Add another session to TELEGRAM_SESSION_STRINGS to run more clients.",
-        file=sys.stderr,
+    # Handing out an already-claimed session here would make Telegram burn it
+    # with AuthKeyDuplicatedError — losing the slot for the client that owns it
+    # too. Refusing to start is recoverable; a burned session is not.
+    raise RuntimeError(
+        f"All {len(pool)} pooled Telegram session(s) are already claimed by other "
+        "live clients, so this one has no session to use. Add another session to "
+        "TELEGRAM_SESSION_STRINGS (generate it with "
+        "`uv run session_string_generator.py`) — one slot per concurrent client — "
+        "or stop one of the other clients."
     )
-    return pool[0]
 
 
 def _discover_accounts() -> dict[str, TelegramClient]:
@@ -571,6 +575,9 @@ def with_account(readonly=False):
 
 _last_conn_verified: dict[int, float] = {}
 _CONN_VERIFY_INTERVAL: float = 30.0  # seconds between live pings
+# Upstream's single _RECONNECT_TIMEOUT (f131971) is intentionally replaced by
+# these per-operation bounds: a hung disconnect and a hung start deserve very
+# different budgets, and the operation name makes the timeout error actionable.
 _DISCONNECT_TIMEOUT_SECONDS: float = 3.0
 _CONNECT_TIMEOUT_SECONDS: float = 10.0
 _AUTH_CHECK_TIMEOUT_SECONDS: float = 5.0
@@ -594,7 +601,19 @@ async def _force_reconnect(cl: TelegramClient):
         await _wait_for_telegram(cl.disconnect(), _DISCONNECT_TIMEOUT_SECONDS, "disconnect")
     except Exception:
         pass
-    await _wait_for_telegram(cl.connect(), _CONNECT_TIMEOUT_SECONDS, "connect")
+    try:
+        await _wait_for_telegram(cl.connect(), _CONNECT_TIMEOUT_SECONDS, "connect")
+    except AuthKeyDuplicatedError as exc:
+        # Telegram permanently invalidates an auth key used from two IPs at
+        # once, so retrying here can never succeed — surface it instead of
+        # letting the caller sit in a reconnect loop.
+        raise RuntimeError(
+            "Telegram session is no longer usable: the same session string was "
+            "used by another client at the same time (AuthKeyDuplicatedError). "
+            "Give each concurrent client its own session via "
+            "TELEGRAM_SESSION_STRINGS or TELEGRAM_SESSION_STRING_<LABEL>, then "
+            "regenerate the burned session with `uv run session_string_generator.py`."
+        ) from exc
     is_authorized = await _wait_for_telegram(
         cl.is_user_authorized(), _AUTH_CHECK_TIMEOUT_SECONDS, "authorization check"
     )

@@ -25,6 +25,10 @@ requires-python = ">=3.10"
 dependencies = [
     "dotenv>=0.9.9",
     "httpx>=0.28.1",
+    # Fork divergence: upstream pins mcp<2 to keep the FastMCP API (d6901ac).
+    # This fork migrated to the mcp 2.x MCPServer API (e4e666c), so runtime.py
+    # imports mcp.server.mcpserver, which does not exist in 1.x. Keep >=2.0.0
+    # and expect this line to conflict on every upstream merge.
     "mcp[cli]>=2.0.0",
     "python-dotenv>=1.1.0",
     "python-json-logger>=3.3.0",

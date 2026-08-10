@@ -431,6 +431,14 @@ async def test_ensure_connected_skips_recently_verified_client(monkeypatch):
     assert client.calls == ["is_connected"]
 
 
+class _DuplicatedKeyClient(_ConnectivityClient):
+    async def connect(self):
+        from telethon.errors import AuthKeyDuplicatedError
+
+        self.calls.append("connect")
+        raise AuthKeyDuplicatedError(request=None)
+
+
 @pytest.mark.asyncio
 async def test_force_reconnect_times_out_instead_of_hanging(monkeypatch):
     client = _ConnectivityClient(connected=False)
@@ -442,6 +450,16 @@ async def test_force_reconnect_times_out_instead_of_hanging(monkeypatch):
     monkeypatch.setattr(runtime, "_CONNECT_TIMEOUT_SECONDS", 0.01)
 
     with pytest.raises(TimeoutError, match="Telegram connect timed out"):
+        await runtime._force_reconnect(client)
+
+
+@pytest.mark.asyncio
+async def test_force_reconnect_reports_burned_session():
+    # From upstream f131971: a session string used from two IPs is burned for
+    # good, so _force_reconnect must fail loudly rather than retry forever.
+    client = _DuplicatedKeyClient(connected=False, authorized=True)
+
+    with pytest.raises(RuntimeError, match="no longer usable"):
         await runtime._force_reconnect(client)
 
 
