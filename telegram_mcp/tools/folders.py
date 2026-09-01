@@ -1,11 +1,12 @@
 """Folders MCP tools."""
 
 from telegram_mcp.runtime import *
+from typing import Optional
 
 
 @mcp.tool(annotations=ToolAnnotations(title="List Folders", openWorldHint=True, readOnlyHint=True))
 @with_account(readonly=True)
-async def list_folders(account: str = None) -> str:
+async def list_folders(account: Optional[str] = None) -> str:
     """
     Get all dialog folders (filters) with their IDs, names, and emoji.
     Returns a list of folders that can be used with other folder tools.
@@ -72,7 +73,7 @@ async def list_folders(account: str = None) -> str:
 
 @mcp.tool(annotations=ToolAnnotations(title="Get Folder", openWorldHint=True, readOnlyHint=True))
 @with_account(readonly=True)
-async def get_folder(folder_id: int, account: str = None) -> str:
+async def get_folder(folder_id: int, account: Optional[str] = None) -> str:
     """
     Get detailed information about a specific folder including all included chats.
 
@@ -196,7 +197,7 @@ async def create_folder(
     exclude_muted: bool = False,
     exclude_read: bool = False,
     exclude_archived: bool = True,
-    account: str = None,
+    account: Optional[str] = None,
 ) -> str:
     """
     Create a new dialog folder.
@@ -292,7 +293,7 @@ async def add_chat_to_folder(
     folder_id: int,
     chat_id: Union[int, str],
     pinned: bool = False,
-    account: str = None,
+    account: Optional[str] = None,
 ) -> str:
     """
     Add a chat to an existing folder.
@@ -396,7 +397,7 @@ async def add_chat_to_folder(
 @with_account(readonly=False)
 @validate_id("chat_id")
 async def remove_chat_from_folder(
-    folder_id: int, chat_id: Union[int, str], account: str = None
+    folder_id: int, chat_id: Union[int, str], account: Optional[str] = None
 ) -> str:
     """
     Remove a chat from a folder.
@@ -503,7 +504,7 @@ async def remove_chat_from_folder(
     )
 )
 @with_account(readonly=False)
-async def delete_folder(folder_id: int, account: str = None) -> str:
+async def delete_folder(folder_id: int, account: Optional[str] = None) -> str:
     """
     Delete a folder. Chats in the folder are preserved, only the folder is removed.
 
@@ -550,7 +551,7 @@ async def delete_folder(folder_id: int, account: str = None) -> str:
     )
 )
 @with_account(readonly=False)
-async def reorder_folders(folder_ids: List[int], account: str = None) -> str:
+async def reorder_folders(folder_ids: List[int], account: Optional[str] = None) -> str:
     """
     Change the order of folders in the folder list.
 
