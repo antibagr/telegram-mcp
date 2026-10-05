@@ -10,6 +10,9 @@ services:
       - .env
     environment:
       - TELEGRAM_ALLOW_SERVER_ROOTS_FALLBACK=1
+      # Upstream's transcribe_voice defaults to Groq, which is not configured here;
+      # use Telegram's native (Premium) speech-to-text, like the fork's transcribe_audio.
+      - TELEGRAM_TRANSCRIBE_ENGINE=telegram
     command: ["python", "main_http.py", "/data"]
     volumes:
       - ./tg-files:/data
