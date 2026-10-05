@@ -273,7 +273,32 @@ async def test_forward_message_still_honours_the_old_top_msg_id_name(forwarder):
 
 @pytest.mark.asyncio
 async def test_forward_message_refuses_conflicting_topic_names(forwarder):
-    result = await messages.forward_message(1, 10, 2, topic_id=5, top_msg_id=77, account="test")
+    from fork_semantics import tool_error_text
+
+    result = await tool_error_text(
+        messages.forward_message(1, 10, 2, topic_id=5, top_msg_id=77, account="test")
+    )
 
     assert "top_msg_id" in result and "topic_id" in result
+    assert forwarder.requests == []
+
+
+@pytest.mark.asyncio
+async def test_list_messages_transcription_can_be_switched_off(reader):
+    cl = reader([_msg(1, 7, voice=True)])
+
+    result = json.loads(
+        await messages.list_messages(42, thread_id=7, transcribe_audio=False, account="test")
+    )["results"]
+
+    assert "transcription" not in result[0]
+    assert cl.transcribed == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", [0, -1])
+async def test_forward_message_validates_the_alias_like_topic_id(forwarder, bad):
+    result = await messages.forward_message(1, 10, 2, top_msg_id=bad, account="test")
+
+    assert "topic_id must be a positive integer" in result
     assert forwarder.requests == []

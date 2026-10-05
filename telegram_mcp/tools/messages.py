@@ -1518,7 +1518,13 @@ async def forward_message(
         # route into the topic instead of landing in the main chat.
         if top_msg_id is not None:
             if topic_id is not None and topic_id != top_msg_id:
-                return "Error: top_msg_id is a deprecated alias of topic_id; pass topic_id only."
+                message = "Error: top_msg_id is a deprecated alias of topic_id; pass topic_id only."
+                return log_and_format_error(
+                    "forward_message",
+                    ValidationError(message),
+                    prefix="VALIDATION-001",
+                    user_message=message,
+                )
             topic_id = top_msg_id
         if topic_id is not None and (type(topic_id) is not int or topic_id <= 0):
             return "Error: topic_id must be a positive integer."

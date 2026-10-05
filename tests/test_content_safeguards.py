@@ -196,3 +196,16 @@ async def test_fast_tool_under_the_ceiling_is_untouched(monkeypatch):
     assert result.is_error is False
     assert result.content[0].text == "done"
     assert result.content[0].annotations.audience == ["user"]
+
+
+@pytest.mark.asyncio
+async def test_disabled_tool_timeout_lets_a_slow_tool_finish(monkeypatch):
+    async def slow() -> str:
+        await asyncio.sleep(0.2)
+        return "done"
+
+    monkeypatch.setenv("TELEGRAM_TOOL_TIMEOUT_SECONDS", "0")
+    result = await _call(_probe_server(slow=slow), "auto", "slow")
+
+    assert result.is_error is False
+    assert result.content[0].text == "done"
