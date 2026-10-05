@@ -52,8 +52,9 @@ def test_flood_wait_is_detected_by_helper():
 
 def test_flood_wait_logs_warning_instead_of_error():
     err = FloodWaitError(request=None, capture=30)
-    with patch("telegram_mcp.runtime.logger") as mock_logger, pytest.raises(ToolError):
-        log_and_format_error("get_history", err, chat_id=98765)
+    with patch("telegram_mcp.runtime.logger") as mock_logger:
+        with pytest.raises(ToolError):  # fork: the FloodWait is raised (ec8c372)
+            log_and_format_error("get_history", err, chat_id=98765)
         mock_logger.warning.assert_called_once()
         warning_args = mock_logger.warning.call_args[0][0]
         assert warning_args == "Telegram FloodWait; retry only after the reported delay."
