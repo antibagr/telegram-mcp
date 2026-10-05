@@ -2576,6 +2576,9 @@ def _configure_allowed_roots_from_cli(argv: Optional[List[str]] = None) -> None:
 
 TRANSCRIBE_MAX_WAIT_SECONDS = 45
 TRANSCRIBE_CONCURRENCY = 5
+# Left for the reader's own Telegram requests when the transcription budget is
+# capped by the per-call tool timeout (TELEGRAM_TOOL_TIMEOUT_SECONDS).
+TRANSCRIBE_TOOL_TIMEOUT_HEADROOM_SECONDS = 10.0
 
 
 def message_is_transcribable(msg) -> bool:
@@ -2618,16 +2621,34 @@ async def attach_transcriptions(
     ``records[i]`` gains ``transcription`` (or ``transcription_error`` / the
     ``transcription_pending`` flag). Non-audio messages are untouched. Returns
     ``records`` for convenience.
+
+    ``max_wait_seconds`` is one budget for the whole batch, not per message, and
+    is capped below the per-call tool timeout minus
+    ``TRANSCRIBE_TOOL_TIMEOUT_HEADROOM_SECONDS``: the reader then returns its
+    messages with whatever finished, the rest flagged pending, instead of the
+    whole call timing out (GEN-TIMEOUT) and returning nothing.
     """
     targets = [(i, m) for i, m in enumerate(messages) if message_is_transcribable(m)]
     if not targets:
         return records
+    budget = float(max_wait_seconds)
+    tool_timeout = _tool_timeout_seconds()
+    if tool_timeout is not None:
+        budget = min(budget, tool_timeout - TRANSCRIBE_TOOL_TIMEOUT_HEADROOM_SECONDS)
+    deadline = time.monotonic() + budget
     sem = asyncio.Semaphore(max(1, concurrency))
 
     async def _one(i, m):
         async with sem:
+            # Past the deadline, wait_for times out before the request is sent.
+            remaining = deadline - time.monotonic()
             try:
-                text, pending = await transcribe_message_text(cl, entity, m.id, max_wait_seconds)
+                text, pending = await asyncio.wait_for(
+                    transcribe_message_text(cl, entity, m.id, remaining), timeout=remaining
+                )
+            except asyncio.TimeoutError:
+                records[i]["transcription_pending"] = True
+                return
             except Exception as e:
                 records[i]["transcription_error"] = str(e)
                 return
