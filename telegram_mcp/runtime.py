@@ -30,7 +30,7 @@ from mcp.server.mcpserver import MCPServer, Context, Image
 from mcp.server.mcpserver.exceptions import ToolError
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-from mcp.types import Annotations, ImageContent, TextContent, ToolAnnotations
+from mcp.types import Annotations, CallToolResult, ImageContent, TextContent, ToolAnnotations
 from mcp.shared.exceptions import MCPError
 from pythonjsonlogger import jsonlogger
 from telethon import TelegramClient, functions, types, utils
@@ -209,51 +209,68 @@ def _tool_timeout_seconds(value: Optional[str] = None) -> Optional[float]:
     return timeout if timeout > 0 else None
 
 
-def _tool_timeout_result(timeout: float) -> dict:
-    """Wire-shaped ``CallToolResult`` for a tool call cut off by the server ceiling."""
-    return {
-        "content": [
-            {
-                "type": "text",
-                "text": (
+def _tool_timeout_result(timeout: float) -> CallToolResult:
+    """The tool execution error for a call cut off by the server ceiling."""
+    return CallToolResult(
+        content=[
+            TextContent(
+                type="text",
+                text=(
                     "Telegram MCP tool timed out after "
                     f"{timeout:g}s (code: GEN-TIMEOUT). "
                     "Completion is unknown; a write may already have "
                     "succeeded. Check destination state before retrying "
                     "non-idempotent operations."
                 ),
-            }
+            )
         ],
-        "isError": True,
-    }
+        is_error=True,
+    )
 
 
-def _install_annotation_hook() -> None:
+def _install_tool_timeout(server: MCPServer = mcp) -> None:
+    """Bound every tools/call at TELEGRAM_TOOL_TIMEOUT_SECONDS (upstream 52ab7b1).
+
+    Wraps the low-level tools/call handler, the seam the SDK itself uses for
+    tool-call interceptors, rather than short-circuiting the middleware chain: the
+    runner then sieves and stamps the timeout result for the negotiated protocol
+    version like any handler result (2026-07-28 requires ``resultType``, which a
+    hand-built wire dict returned from middleware would lack).
+    """
+    lowlevel = server._lowlevel_server
+    entry = lowlevel.get_request_handler("tools/call")
+    call_tool = entry.handler
+
+    async def call_tool_within_timeout(ctx, params):
+        timeout = _tool_timeout_seconds()
+        if timeout is None:
+            return await call_tool(ctx, params)
+        try:
+            return await asyncio.wait_for(call_tool(ctx, params), timeout=timeout)
+        except asyncio.TimeoutError:
+            return _tool_timeout_result(timeout)
+
+    lowlevel.add_request_handler("tools/call", entry.params_type, call_tool_within_timeout)
+
+
+def _install_annotation_hook(server: MCPServer = mcp) -> None:
     # ServerRunner._inner serialises the handler result to its wire dict *before*
     # the middleware chain sees it, so this operates on the dict, not CallToolResult.
     audience = _USER_AUDIENCE.model_dump(by_alias=True, mode="json", exclude_none=True)
 
     async def annotate_user_audience(ctx, call_next):
-        if ctx.method != "tools/call":
-            return await call_next(ctx)
-        timeout = _tool_timeout_seconds()
-        if timeout is None:
-            result = await call_next(ctx)
-        else:
-            try:
-                result = await asyncio.wait_for(call_next(ctx), timeout=timeout)
-            except asyncio.TimeoutError:
-                result = _tool_timeout_result(timeout)
-        if isinstance(result, dict):
+        result = await call_next(ctx)
+        if ctx.method == "tools/call" and isinstance(result, dict):
             for block in result.get("content") or []:
                 if isinstance(block, dict) and block.get("type") in ("text", "image"):
                     block.setdefault("annotations", audience)
         return result
 
     # Appended, so it sits innermost — closest to the handler that produced the result.
-    mcp.middleware.append(annotate_user_audience)
+    server.middleware.append(annotate_user_audience)
 
 
+_install_tool_timeout()
 _install_annotation_hook()
 
 

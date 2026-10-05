@@ -87,47 +87,79 @@ async def test_image_results_are_annotated_as_user_audience():
     assert image_block["annotations"]["audience"] == ["user"]
 
 
+# mcp 2.x: the timeout wraps the tools/call handler (runtime._install_tool_timeout),
+# so these drive a real server through the SDK's in-memory client, once per
+# protocol era: 2026-07-28 rejects a result without the envelope the runner adds.
+_PROTOCOL_MODES = ["legacy", "auto"]  # 2025-11-25 and 2026-07-28
+
+
+def _probe_server(**tools):
+    from mcp.server.mcpserver import MCPServer
+
+    server = MCPServer("probe")
+    for name, fn in tools.items():
+        server.add_tool(fn, name=name)
+    runtime._install_tool_timeout(server)
+    runtime._install_annotation_hook(server)
+    return server
+
+
+async def _call(server, mode, name):
+    from mcp.client import Client
+
+    async with Client(server, mode=mode) as client:
+        return await client.call_tool(name, {})
+
+
+def test_production_server_installs_the_timeout_and_the_annotations():
+    handler = runtime.mcp._lowlevel_server.get_request_handler("tools/call").handler
+    assert handler.__name__ == "call_tool_within_timeout"
+    assert runtime.mcp.middleware[-1].__name__ == "annotate_user_audience"
+
+
 @pytest.mark.asyncio
-async def test_call_tool_timeout_returns_an_explicit_annotated_error(monkeypatch):
-    async def call_next(_ctx):
+@pytest.mark.parametrize("mode", _PROTOCOL_MODES)
+async def test_call_tool_timeout_returns_an_explicit_annotated_error(monkeypatch, mode):
+    async def hang() -> str:
         await asyncio.Event().wait()
+        return "never"
 
-    monkeypatch.setenv("TELEGRAM_TOOL_TIMEOUT_SECONDS", "0.01")
-    response = await _hook()(_TOOLS_CALL, call_next)
+    monkeypatch.setenv("TELEGRAM_TOOL_TIMEOUT_SECONDS", "0.05")
+    result = await _call(_probe_server(hang=hang), mode, "hang")
 
-    assert response["isError"] is True
-    assert response["content"][0]["text"] == (
-        "Telegram MCP tool timed out after 0.01s (code: GEN-TIMEOUT). "
+    assert result.is_error is True
+    assert result.content[0].text == (
+        "Telegram MCP tool timed out after 0.05s (code: GEN-TIMEOUT). "
         "Completion is unknown; a write may already have succeeded. "
         "Check destination state before retrying non-idempotent operations."
     )
-    assert response["content"][0]["annotations"]["audience"] == ["user"]
-    # The short-circuit result must still be a valid CallToolResult on the wire.
-    assert CallToolResult.model_validate(response).is_error is True
+    assert result.content[0].annotations.audience == ["user"]
 
 
 @pytest.mark.asyncio
-async def test_timeout_after_accepted_write_reports_unknown_completion_once(monkeypatch):
+@pytest.mark.parametrize("mode", _PROTOCOL_MODES)
+async def test_timeout_after_accepted_write_reports_unknown_completion_once(monkeypatch, mode):
     marker = "synthetic-write-marker-4f1c"
     accepted_writes = []
 
-    async def call_next(_ctx):
+    async def write() -> str:
         accepted_writes.append(marker)  # the write landed, then the call stalled
         await asyncio.Event().wait()
+        return "never"
 
-    monkeypatch.setenv("TELEGRAM_TOOL_TIMEOUT_SECONDS", "0.01")
-    response = await _hook()(_TOOLS_CALL, call_next)
+    monkeypatch.setenv("TELEGRAM_TOOL_TIMEOUT_SECONDS", "0.05")
+    result = await _call(_probe_server(write=write), mode, "write")
 
     assert accepted_writes == [marker]  # dispatched exactly once, never retried
-    assert response["isError"] is True
-    assert len(response["content"]) == 1
-    text = response["content"][0]["text"]
+    assert result.is_error is True
+    assert len(result.content) == 1
+    text = result.content[0].text
     assert "code: GEN-TIMEOUT" in text
     assert "Completion is unknown" in text
     assert "a write may already have succeeded" in text
     assert "before retrying" in text
     assert marker not in text
-    assert response["content"][0]["annotations"]["audience"] == ["user"]
+    assert result.content[0].annotations.audience == ["user"]
 
 
 @pytest.mark.parametrize(
@@ -140,27 +172,27 @@ def test_tool_timeout_parsing(monkeypatch, value, expected):
 
 
 @pytest.mark.asyncio
-async def test_disabled_tool_timeout_does_not_relabel_handler_timeout(monkeypatch):
-    async def call_next(_ctx):
+@pytest.mark.parametrize("mode", _PROTOCOL_MODES)
+async def test_disabled_tool_timeout_does_not_relabel_handler_timeout(monkeypatch, mode):
+    async def own_timeout() -> str:
         raise asyncio.TimeoutError("tool-specific timeout")
 
     monkeypatch.setenv("TELEGRAM_TOOL_TIMEOUT_SECONDS", "0")
-    with pytest.raises(asyncio.TimeoutError, match="tool-specific timeout"):
-        await _hook()(_TOOLS_CALL, call_next)
+    result = await _call(_probe_server(own_timeout=own_timeout), mode, "own_timeout")
+
+    assert result.is_error is True
+    assert "tool-specific timeout" in result.content[0].text
+    assert "GEN-TIMEOUT" not in result.content[0].text
 
 
 @pytest.mark.asyncio
-async def test_tool_timeout_only_bounds_tool_calls(monkeypatch):
-    """tools/list and every other method pass straight through, unbounded."""
-    finished = []
+async def test_fast_tool_under_the_ceiling_is_untouched(monkeypatch):
+    async def quick() -> str:
+        return "done"
 
-    async def call_next(_ctx):
-        await asyncio.sleep(0.05)
-        finished.append(True)
-        return {"tools": []}
+    monkeypatch.setenv("TELEGRAM_TOOL_TIMEOUT_SECONDS", "5")
+    result = await _call(_probe_server(quick=quick), "auto", "quick")
 
-    monkeypatch.setenv("TELEGRAM_TOOL_TIMEOUT_SECONDS", "0.01")
-    response = await _hook()(SimpleNamespace(method="tools/list"), call_next)
-
-    assert response == {"tools": []}
-    assert finished == [True]
+    assert result.is_error is False
+    assert result.content[0].text == "done"
+    assert result.content[0].annotations.audience == ["user"]
