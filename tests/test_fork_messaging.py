@@ -206,3 +206,74 @@ async def test_list_messages_thread_reads_the_thread_and_transcribes_it(reader):
     assert [r["id"] for r in result] == [5, 4]
     assert result[0]["transcription"] == "transcript of 5"
     assert "transcription" not in result[1]
+
+
+@pytest.mark.asyncio
+async def test_transcribe_off_disables_the_fork_auto_transcription_too(reader, monkeypatch):
+    """TELEGRAM_TRANSCRIBE=off is upstream's global switch; it silences ours as well."""
+    monkeypatch.setenv("TELEGRAM_TRANSCRIBE", "off")
+    cl = reader([_msg(2, 7, voice=True), _msg(1, 7, voice=True)])
+
+    history = json.loads(await messages.get_history(42, account="test"))["results"]
+    listed = json.loads(await messages.list_messages(42, thread_id=7, account="test"))["results"]
+
+    assert not any("transcription" in r for r in history + listed)
+    assert cl.transcribed == []
+
+
+@pytest.mark.asyncio
+async def test_on_demand_default_keeps_the_fork_auto_transcription(reader, monkeypatch):
+    monkeypatch.delenv("TELEGRAM_TRANSCRIBE", raising=False)  # upstream default: on-demand
+    cl = reader([_msg(1, 7, voice=True)])
+
+    history = json.loads(await messages.get_history(42, account="test"))["results"]
+
+    assert history[0]["transcription"] == "transcript of 1"
+    assert cl.transcribed == [1]
+
+
+# --- forward_message: the fork's old top_msg_id name -----------------------------
+
+
+class _ForwardClient:
+    def __init__(self):
+        self.requests = []
+
+    async def get_messages(self, entity, ids=None):
+        return None  # not part of an album
+
+    async def __call__(self, request):
+        self.requests.append(request)
+        return SimpleNamespace(updates=[])
+
+
+@pytest.fixture
+def forwarder(monkeypatch):
+    cl = _ForwardClient()
+    monkeypatch.setattr(messages, "get_client", lambda account=None: cl)
+    monkeypatch.setattr(
+        messages,
+        "resolve_entity",
+        AsyncMock(side_effect=lambda chat, client: types.InputPeerChat(abs(int(chat)))),
+    )
+    return cl
+
+
+@pytest.mark.asyncio
+async def test_forward_message_still_honours_the_old_top_msg_id_name(forwarder):
+    """Unknown arguments are dropped silently, so a caller still using the fork's
+    pre-v3.2.66 name would otherwise land in the main chat instead of the topic."""
+    result = await messages.forward_message(1, 10, 2, top_msg_id=77, account="test")
+
+    (req,) = forwarder.requests
+    assert isinstance(req, functions.messages.ForwardMessagesRequest)
+    assert req.top_msg_id == 77
+    assert "forwarded" in result
+
+
+@pytest.mark.asyncio
+async def test_forward_message_refuses_conflicting_topic_names(forwarder):
+    result = await messages.forward_message(1, 10, 2, topic_id=5, top_msg_id=77, account="test")
+
+    assert "top_msg_id" in result and "topic_id" in result
+    assert forwarder.requests == []

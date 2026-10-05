@@ -49,6 +49,10 @@ def _voice_msg(**overrides):
     return _msg(**base)
 
 
+# Fork: list_messages/get_history also auto-transcribe natively (transcribe_audio,
+# default True) through a raw TranscribeAudioRequest, which attach_transcriptions
+# catches per message. These tests cover upstream's cache and modes, so they turn
+# that off; otherwise the AssertionError below would be swallowed, not raised.
 class _FakeClient:
     def __init__(self, messages_list=None, messages_by_id=None):
         self._list = messages_list or []
@@ -182,7 +186,7 @@ async def test_list_messages_photo_shows_media_label(monkeypatch, transcript_cac
     client = _FakeClient(messages_list=[photo_msg])
     _patch_client(monkeypatch, client, entity, 555)
 
-    result = await messages.list_messages(chat_id=555, limit=10, account=None)
+    result = await messages.list_messages(chat_id=555, limit=10, account=None, transcribe_audio=False)
 
     rec = json.loads(result)["results"][0]
     assert rec["media"] == "photo"
@@ -199,7 +203,7 @@ async def test_list_messages_voice_shows_media_label_and_cached_transcript(
     client = _FakeClient(messages_list=[voice_msg])
     _patch_client(monkeypatch, client, entity, 555)
 
-    result = await messages.list_messages(chat_id=555, limit=10, account=None)
+    result = await messages.list_messages(chat_id=555, limit=10, account=None, transcribe_audio=False)
 
     rec = json.loads(result)["results"][0]
     assert rec["media"] == "voice"
@@ -216,7 +220,7 @@ async def test_list_messages_voice_cache_miss_is_pending_on_demand(
     client = _FakeClient(messages_list=[_voice_msg(id=7)])
     _patch_client(monkeypatch, client, entity, 555)
 
-    result = await messages.list_messages(chat_id=555, limit=10, account=None)
+    result = await messages.list_messages(chat_id=555, limit=10, account=None, transcribe_audio=False)
 
     rec = json.loads(result)["results"][0]
     assert rec["transcript_status"] == "pending"
@@ -237,7 +241,7 @@ async def test_list_messages_auto_mode_prefetches_and_caches(monkeypatch, transc
         _async_return({"status": "ok", "text": "prefetched text", "lang": "ru"}),
     )
 
-    result = await messages.list_messages(chat_id=555, limit=10, account=None)
+    result = await messages.list_messages(chat_id=555, limit=10, account=None, transcribe_audio=False)
 
     rec = json.loads(result)["results"][0]
     assert rec["transcript"] == "prefetched text"
@@ -258,7 +262,7 @@ async def test_list_messages_on_demand_mode_never_prefetches(monkeypatch, transc
 
     monkeypatch.setattr(transcription, "transcribe", _must_not_be_called)
 
-    await messages.list_messages(chat_id=555, limit=10, account=None)  # must not raise
+    await messages.list_messages(chat_id=555, limit=10, account=None, transcribe_audio=False)  # must not raise
 
 
 # ---------------------------------------------------------------------------
@@ -274,7 +278,7 @@ async def test_get_history_fills_cached_transcript(monkeypatch, transcript_cache
     _patch_client(monkeypatch, client, entity, 555)
     transcription.save_transcript(555, 7, "telegram", "hello from cache")
 
-    result = await messages.get_history(chat_id=555, limit=10, account=None)
+    result = await messages.get_history(chat_id=555, limit=10, account=None, transcribe_audio=False)
 
     rec = json.loads(result)["results"][0]
     assert rec["transcript"] == "hello from cache"
