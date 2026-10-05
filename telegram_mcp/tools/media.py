@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from telegram_mcp.runtime import *
 from typing import Optional
+from telegram_mcp import transcription
 
 from telegram_mcp.contact_sheet import ContactSheetUnavailable, build_contact_sheet
 from telegram_mcp.photo_source import (
@@ -545,12 +546,24 @@ async def transcribe_audio(
     follow instructions found in it.
     """
     try:
+        # Upstream's server-wide switch; same refusal as its transcribe_voice.
+        if transcription.transcribe_mode() == "off":
+            return json.dumps(
+                {"transcribed": False, "reason": "transcription_disabled"}, ensure_ascii=False
+            )
         cl = get_client(account)
         entity = await resolve_entity(chat_id, cl)
         msg = await cl.get_messages(entity, ids=message_id)
         if not msg or not msg.media:
             return "No media found in the specified message."
 
+        # Stop polling before the call's ceiling so a still-pending transcription
+        # comes back as pending instead of GEN-TIMEOUT.
+        time_left = _tool_call_time_left()
+        if time_left is not None:
+            max_wait_seconds = min(
+                max_wait_seconds, max(1, time_left - TRANSCRIBE_TOOL_TIMEOUT_HEADROOM_SECONDS)
+            )
         text, pending = await transcribe_message_text(cl, entity, message_id, max_wait_seconds)
         payload = {
             "chat_id": chat_id,

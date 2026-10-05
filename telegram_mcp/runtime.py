@@ -1,4 +1,5 @@
 import argparse
+import contextvars
 import os
 import re
 import sys
@@ -209,6 +210,20 @@ def _tool_timeout_seconds(value: Optional[str] = None) -> Optional[float]:
     return timeout if timeout > 0 else None
 
 
+# Monotonic deadline of the tools/call being served, set by the timeout wrapper
+# below; None outside a call or when the ceiling is off. Lets work that waits on
+# Telegram (native transcription) stop in time to return what it has.
+_TOOL_CALL_DEADLINE: contextvars.ContextVar[Optional[float]] = contextvars.ContextVar(
+    "telegram_mcp_tool_call_deadline", default=None
+)
+
+
+def _tool_call_time_left() -> Optional[float]:
+    """Seconds until the current tools/call hits its ceiling, or None if unbounded."""
+    deadline = _TOOL_CALL_DEADLINE.get()
+    return None if deadline is None else deadline - time.monotonic()
+
+
 def _tool_timeout_result(timeout: float) -> CallToolResult:
     """The tool execution error for a call cut off by the server ceiling."""
     return CallToolResult(
@@ -245,10 +260,13 @@ def _install_tool_timeout(server: MCPServer = mcp) -> None:
         timeout = _tool_timeout_seconds()
         if timeout is None:
             return await call_tool(ctx, params)
+        token = _TOOL_CALL_DEADLINE.set(time.monotonic() + timeout)
         try:
             return await asyncio.wait_for(call_tool(ctx, params), timeout=timeout)
         except asyncio.TimeoutError:
             return _tool_timeout_result(timeout)
+        finally:
+            _TOOL_CALL_DEADLINE.reset(token)
 
     lowlevel.add_request_handler("tools/call", entry.params_type, call_tool_within_timeout)
 
@@ -2640,29 +2658,35 @@ async def attach_transcriptions(
     ``records`` for convenience.
 
     ``max_wait_seconds`` is one budget for the whole batch, not per message, and
-    is capped below the per-call tool timeout minus
-    ``TRANSCRIBE_TOOL_TIMEOUT_HEADROOM_SECONDS``: the reader then returns its
-    messages with whatever finished, the rest flagged pending, instead of the
-    whole call timing out (GEN-TIMEOUT) and returning nothing.
+    ends ``TRANSCRIBE_TOOL_TIMEOUT_HEADROOM_SECONDS`` before the current tool
+    call's ceiling, counting the time the call has already spent fetching: the
+    reader then returns its messages with whatever finished, the rest flagged
+    pending, instead of timing out (GEN-TIMEOUT) and returning nothing.
     """
     targets = [(i, m) for i, m in enumerate(messages) if message_is_transcribable(m)]
     if not targets:
         return records
     budget = float(max_wait_seconds)
-    tool_timeout = _tool_timeout_seconds()
-    if tool_timeout is not None:
-        budget = min(budget, tool_timeout - TRANSCRIBE_TOOL_TIMEOUT_HEADROOM_SECONDS)
+    time_left = _tool_call_time_left()
+    if time_left is not None:
+        budget = min(budget, time_left - TRANSCRIBE_TOOL_TIMEOUT_HEADROOM_SECONDS)
     deadline = time.monotonic() + budget
     sem = asyncio.Semaphore(max(1, concurrency))
+
+    async def _transcribe(m, wait):
+        try:
+            return await transcribe_message_text(cl, entity, m.id, wait)
+        except TimeoutError as e:
+            # The client's own request timed out: that is a failure, not the batch
+            # budget running out, which is the only TimeoutError _one may see.
+            raise RuntimeError(f"TimeoutError: {e}") from e
 
     async def _one(i, m):
         async with sem:
             # Past the deadline, wait_for times out before the request is sent.
             remaining = deadline - time.monotonic()
             try:
-                text, pending = await asyncio.wait_for(
-                    transcribe_message_text(cl, entity, m.id, remaining), timeout=remaining
-                )
+                text, pending = await asyncio.wait_for(_transcribe(m, remaining), timeout=remaining)
             except asyncio.TimeoutError:
                 records[i]["transcription_pending"] = True
                 return
