@@ -199,11 +199,11 @@ async def test_transcribe_audio_wait_is_capped_by_the_call_deadline(audio_tool):
         started = time.monotonic()
         result = json.loads(
             await media.transcribe_audio(
-                chat_id=42, message_id=1, max_wait_seconds=600, account="test"
+                chat_id=42, message_id=1, max_wait_seconds=30, account="test"
             )
         )
     finally:
         runtime._TOOL_CALL_DEADLINE.reset(token)
 
-    assert time.monotonic() - started < 3.0  # one 1.5s re-poll at most, not 600s
+    assert time.monotonic() - started < 3.0  # one 1.5s re-poll at most, not 30s
     assert result["pending"] is True
